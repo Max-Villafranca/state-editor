@@ -260,10 +260,18 @@ test('state and transition actions remain compact and export clean XState JSON',
   const entryParameterValue = page.getByLabel(
     'initializeState parameter1 value',
   );
+  const entryParameterType = page.getByLabel('initializeState parameter1 type');
   const entryKeyBox = await requiredBox(entryParameterKey);
   const entryValueBox = await requiredBox(entryParameterValue);
+  const entryTypeBox = await requiredBox(entryParameterType);
   expect(entryValueBox.y).toBeGreaterThan(entryKeyBox.y + entryKeyBox.height);
-  expect(entryValueBox.width).toBeGreaterThan(entryKeyBox.width);
+  expect(Math.abs(entryTypeBox.y - entryValueBox.y)).toBeLessThan(2);
+  expect(entryValueBox.x).toBeGreaterThan(entryTypeBox.x + entryTypeBox.width);
+  expect(entryKeyBox.width).toBeGreaterThan(entryValueBox.width);
+
+  await page.getByRole('button', { name: 'complete', exact: true }).click();
+  await page.getByRole('button', { name: 'queued', exact: true }).click();
+  await expect(entryParameterKey).toBeVisible();
   await page
     .getByRole('button', { name: 'Remove parameter1 parameter' })
     .click();

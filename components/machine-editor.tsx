@@ -644,6 +644,9 @@ function EditorSurface() {
   const [selectedTransitionIds, setSelectedTransitionIds] = useState<
     Set<string>
   >(() => new Set());
+  const [expandedActionIds, setExpandedActionIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [nodeRuntimeById, setNodeRuntimeById] = useState<
     Map<string, StateFlowNodeRuntime>
   >(() => new Map());
@@ -739,6 +742,15 @@ function EditorSurface() {
     setSelectedTransitionIds(
       next?.kind === 'transition' ? new Set([next.id]) : new Set(),
     );
+  }, []);
+
+  const setActionExpanded = useCallback((id: string, expanded: boolean) => {
+    setExpandedActionIds((current) => {
+      const next = new Set(current);
+      if (expanded) next.add(id);
+      else next.delete(id);
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -2131,6 +2143,8 @@ function EditorSurface() {
               onError={(message) => showIssues([message])}
               actionNameSuggestions={actionNameSuggestions}
               actionParameterSuggestions={actionParameterSuggestions}
+              expandedActionIds={expandedActionIds}
+              onActionExpandedChange={setActionExpanded}
             />
           ) : selectedTransition ? (
             <TransitionInspector
@@ -2144,6 +2158,8 @@ function EditorSurface() {
               onError={(message) => showIssues([message])}
               actionNameSuggestions={actionNameSuggestions}
               actionParameterSuggestions={actionParameterSuggestions}
+              expandedActionIds={expandedActionIds}
+              onActionExpandedChange={setActionExpanded}
               eventNameSuggestions={eventNameSuggestions}
               onDelete={() => removeTransitions([selectedTransition.id])}
             />
@@ -2343,6 +2359,8 @@ function StateInspector({
   onError,
   actionNameSuggestions,
   actionParameterSuggestions,
+  expandedActionIds,
+  onActionExpandedChange,
 }: {
   state: GraphState;
   initial: boolean;
@@ -2357,6 +2375,8 @@ function StateInspector({
   onError: (message: string) => void;
   actionNameSuggestions: string[];
   actionParameterSuggestions: string[];
+  expandedActionIds: ReadonlySet<string>;
+  onActionExpandedChange: (id: string, expanded: boolean) => void;
 }) {
   return (
     <>
@@ -2411,6 +2431,8 @@ function StateInspector({
             addLabel="Add entry action"
             scopeLabel="Entry action"
             withTopBorder={false}
+            expandedActionIds={expandedActionIds}
+            onActionExpandedChange={onActionExpandedChange}
             onChange={(entryActions) => onUpdate({ entryActions })}
             onError={onError}
           />
@@ -2423,6 +2445,8 @@ function StateInspector({
             scopeLabel="Exit action"
             withTopBorder={false}
             disabled={state.final}
+            expandedActionIds={expandedActionIds}
+            onActionExpandedChange={onActionExpandedChange}
             onChange={(exitActions) => onUpdate({ exitActions })}
             onError={onError}
           />
@@ -2488,6 +2512,8 @@ function TransitionInspector({
   onDelete,
   actionNameSuggestions,
   actionParameterSuggestions,
+  expandedActionIds,
+  onActionExpandedChange,
   eventNameSuggestions,
 }: {
   transition: GraphTransition;
@@ -2497,6 +2523,8 @@ function TransitionInspector({
   onDelete: () => void;
   actionNameSuggestions: string[];
   actionParameterSuggestions: string[];
+  expandedActionIds: ReadonlySet<string>;
+  onActionExpandedChange: (id: string, expanded: boolean) => void;
   eventNameSuggestions: string[];
 }) {
   return (
@@ -2528,6 +2556,8 @@ function TransitionInspector({
           actions={transition.actions}
           suggestions={actionNameSuggestions}
           parameterSuggestions={actionParameterSuggestions}
+          expandedActionIds={expandedActionIds}
+          onActionExpandedChange={onActionExpandedChange}
           onChange={onUpdateActions}
           onError={onError}
         />

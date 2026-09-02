@@ -181,6 +181,8 @@ export function ActionListEditor({
   scopeLabel = 'Action',
   withTopBorder = true,
   disabled = false,
+  expandedActionIds,
+  onActionExpandedChange,
   onChange,
   onError,
 }: {
@@ -192,13 +194,11 @@ export function ActionListEditor({
   scopeLabel?: string;
   withTopBorder?: boolean;
   disabled?: boolean;
+  expandedActionIds: ReadonlySet<string>;
+  onActionExpandedChange: (id: string, expanded: boolean) => void;
   onChange: (actions: GraphAction[]) => void;
   onError: (message: string) => void;
 }) {
-  const [expandedActionIds, setExpandedActionIds] = useState<Set<string>>(
-    () => new Set(),
-  );
-
   const updateAction = (id: string, patch: Partial<GraphAction>) => {
     onChange(
       actions.map((action) =>
@@ -264,7 +264,7 @@ export function ActionListEditor({
           disabled={disabled}
           onClick={() => {
             const id = makeActionId();
-            setExpandedActionIds((current) => new Set(current).add(id));
+            onActionExpandedChange(id, true);
             onChange([...actions, { id, type: '' }]);
           }}
         >
@@ -281,13 +281,7 @@ export function ActionListEditor({
             key={action.id}
             open={expandedActionIds.has(action.id)}
             onToggle={(event) => {
-              const open = event.currentTarget.open;
-              setExpandedActionIds((current) => {
-                const next = new Set(current);
-                if (open) next.add(action.id);
-                else next.delete(action.id);
-                return next;
-              });
+              onActionExpandedChange(action.id, event.currentTarget.open);
             }}
             className="group rounded-xl border border-[var(--editor-border)] bg-[var(--editor-panel-subtle)]"
           >
@@ -343,7 +337,7 @@ export function ActionListEditor({
                     key={key}
                     className="space-y-1.5 rounded-lg border border-[var(--editor-border)] bg-[var(--editor-panel)] p-2"
                   >
-                    <div className="grid grid-cols-[minmax(0,1fr)_82px_24px] items-end gap-1.5">
+                    <div className="grid grid-cols-[minmax(0,1fr)_24px] items-end gap-1.5">
                       <div className="min-w-0 space-y-1">
                         <span className="block text-[9px] font-semibold uppercase tracking-[0.1em] text-slate-400 dark:text-slate-500">
                           Name
@@ -358,7 +352,26 @@ export function ActionListEditor({
                           ariaLabel={`${action.type || 'Action'} parameter key`}
                         />
                       </div>
-                      <label className="space-y-1">
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        onClick={() => {
+                          const { [key]: _removed, ...remainingParams } =
+                            params;
+                          updateAction(action.id, {
+                            params:
+                              Object.keys(remainingParams).length > 0
+                                ? remainingParams
+                                : undefined,
+                          });
+                        }}
+                        aria-label={`Remove ${key} parameter`}
+                      >
+                        <X />
+                      </Button>
+                    </div>
+                    <div className="grid grid-cols-[82px_minmax(0,1fr)] items-end gap-1.5">
+                      <label className="min-w-0 space-y-1">
                         <span className="block text-[9px] font-semibold uppercase tracking-[0.1em] text-slate-400 dark:text-slate-500">
                           Type
                         </span>
@@ -384,39 +397,22 @@ export function ActionListEditor({
                           <option value="json">JSON</option>
                         </select>
                       </label>
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        onClick={() => {
-                          const { [key]: _removed, ...remainingParams } =
-                            params;
-                          updateAction(action.id, {
-                            params:
-                              Object.keys(remainingParams).length > 0
-                                ? remainingParams
-                                : undefined,
-                          });
-                        }}
-                        aria-label={`Remove ${key} parameter`}
-                      >
-                        <X />
-                      </Button>
-                    </div>
-                    <div className="block space-y-1">
-                      <span className="block text-[9px] font-semibold uppercase tracking-[0.1em] text-slate-400 dark:text-slate-500">
-                        Value
-                      </span>
-                      <ActionParamValueInput
-                        actionType={action.type}
-                        paramKey={key}
-                        value={value}
-                        onChange={(nextValue) =>
-                          updateAction(action.id, {
-                            params: { ...params, [key]: nextValue },
-                          })
-                        }
-                        onError={onError}
-                      />
+                      <div className="min-w-0 space-y-1">
+                        <span className="block text-[9px] font-semibold uppercase tracking-[0.1em] text-slate-400 dark:text-slate-500">
+                          Value
+                        </span>
+                        <ActionParamValueInput
+                          actionType={action.type}
+                          paramKey={key}
+                          value={value}
+                          onChange={(nextValue) =>
+                            updateAction(action.id, {
+                              params: { ...params, [key]: nextValue },
+                            })
+                          }
+                          onError={onError}
+                        />
+                      </div>
                     </div>
                   </div>
                 ))}
