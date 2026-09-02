@@ -100,7 +100,7 @@ body {
   --editor-edge-active-outline: #5b21b6;
   --editor-edge-glow: drop-shadow(0 0 3px rgba(124, 58, 237, 0.45));
   --editor-edge-label: #344054;
-  --editor-edge-label-bg: #f8fafc;
+  --editor-edge-label-bg: #e9eef4;
   --editor-minimap-node: #cbd5e1;
   --editor-minimap-mask: rgba(248, 250, 252, 0.72);
   --editor-node-shadow: 0 8px 30px rgb(15 23 42 / 8%);
@@ -149,8 +149,8 @@ body {
   --editor-edge-active: #a78bfa;
   --editor-edge-active-outline: #7c3aed;
   --editor-edge-glow: drop-shadow(0 0 4px rgba(167, 139, 250, 0.5));
-  --editor-edge-label: #e2e8f0;
-  --editor-edge-label-bg: #172135;
+  --editor-edge-label: #d8e0ec;
+  --editor-edge-label-bg: #131b2b;
   --editor-minimap-node: #64748b;
   --editor-minimap-mask: rgba(9, 14, 26, 0.76);
   --editor-node-shadow: 0 12px 34px rgb(0 0 0 / 32%);

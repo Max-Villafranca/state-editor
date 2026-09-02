@@ -9,11 +9,9 @@ import {
   ReactFlow,
   ReactFlowProvider,
   SelectionMode,
-  applyEdgeChanges,
   applyNodeChanges,
   useReactFlow,
   type Connection,
-  type Edge,
   type EdgeChange,
   type Node,
   type NodeChange,
@@ -58,6 +56,10 @@ import {
 import { Button } from '@/components/ui/button';
 import { ActionListEditor } from '@/components/action-list-editor';
 import {
+  TransitionEdge,
+  type TransitionBundleEdge,
+} from '@/components/transition-edge';
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -92,10 +94,12 @@ import {
   type JsonValue,
 } from '@/lib/machine-json';
 import { useUndoableState } from '@/lib/undo-history';
+import { createTransitionRoutes } from '@/lib/transition-routes';
 
 const STORAGE_KEY = 'state-editor.project.v1';
 const RECOVERY_FILE_NAME_KEY = 'state-editor.project-file-name.v1';
 const THEME_KEY = 'state-editor.theme';
+const edgeTypes = { transitionBundle: TransitionEdge };
 
 function createEmptyGraph(): GraphMachine {
   return {
@@ -612,7 +616,7 @@ function FieldLabel({ children }: { children: React.ReactNode }) {
 }
 
 function EditorSurface() {
-  const flow = useReactFlow<StateFlowNode, Edge>();
+  const flow = useReactFlow<StateFlowNode, TransitionBundleEdge>();
   const fileInput = useRef<HTMLInputElement>(null);
   const projectFileHandle = useRef<FileSystemFileHandle | null>(null);
   const transitionInput = useRef<HTMLInputElement>(null);
@@ -695,6 +699,20 @@ function EditorSurface() {
         ),
       ]
         .filter(Boolean)
+        .filter((name, index, names) => names.indexOf(name) === index)
+        .sort((a, b) => a.localeCompare(b)),
+    [graph.states, graph.transitions],
+  );
+  const actionParameterSuggestions = useMemo(
+    () =>
+      [
+        ...graph.states.flatMap((state) => [
+          ...state.entryActions,
+          ...state.exitActions,
+        ]),
+        ...graph.transitions.flatMap((transition) => transition.actions),
+      ]
+        .flatMap((action) => Object.keys(action.params ?? {}))
         .filter((name, index, names) => names.indexOf(name) === index)
         .sort((a, b) => a.localeCompare(b)),
     [graph.states, graph.transitions],
@@ -941,20 +959,39 @@ function EditorSurface() {
     ],
   );
 
-  const edges = useMemo<Edge[]>(() => {
+  const transitionRoutes = useMemo(
+    () => createTransitionRoutes(graph.transitions),
+    [graph.transitions],
+  );
+
+  const edges = useMemo<TransitionBundleEdge[]>(() => {
     if (simulating) return [];
-    return graph.transitions.map((transition) => {
-      const selected = selectedTransitionIds.has(transition.id);
+    return transitionRoutes.map((route) => {
+      const selected = route.transitions.some((transition) =>
+        selectedTransitionIds.has(transition.id),
+      );
       return {
-        id: transition.id,
-        source: transition.source,
-        target: transition.target,
-        type: 'smoothstep',
-        label: transition.event,
+        id: route.id,
+        source: route.source,
+        target: route.target,
+        type: 'transitionBundle',
         selected,
         animated: false,
         deletable: true,
-        zIndex: selected ? 10 : 0,
+        selectable: true,
+        data: {
+          sourceLabel: route.source,
+          targetLabel: route.target,
+          laneOffset: route.laneOffset,
+          reciprocal: route.reciprocal,
+          transitions: route.transitions.map((transition) => ({
+            id: transition.id,
+            event: transition.event,
+            selected: selectedTransitionIds.has(transition.id),
+          })),
+          onSelectTransition: (transitionId) =>
+            selectEditorItem({ kind: 'transition', id: transitionId }),
+        },
         markerEnd: {
           type: MarkerType.ArrowClosed,
           color: selected ? 'var(--editor-edge-active)' : 'var(--editor-edge)',
@@ -966,26 +1003,9 @@ function EditorSurface() {
           stroke: selected ? 'var(--editor-edge-active)' : 'var(--editor-edge)',
           filter: selected ? 'var(--editor-edge-glow)' : undefined,
         },
-        labelStyle: {
-          fontSize: selected ? 12 : 11,
-          fontWeight: selected ? 800 : 700,
-          fill: selected ? '#ffffff' : 'var(--editor-edge-label)',
-        },
-        labelBgStyle: {
-          fill: selected
-            ? 'var(--editor-edge-active)'
-            : 'var(--editor-edge-label-bg)',
-          fillOpacity: selected ? 1 : 0.96,
-          stroke: selected
-            ? 'var(--editor-edge-active-outline)'
-            : 'transparent',
-          strokeWidth: selected ? 1.5 : 0,
-        },
-        labelBgPadding: (selected ? [9, 5] : [7, 4]) as [number, number],
-        labelBgBorderRadius: selected ? 7 : 5,
       };
     });
-  }, [graph.transitions, selectedTransitionIds, simulating]);
+  }, [selectEditorItem, selectedTransitionIds, simulating, transitionRoutes]);
 
   const removeStates = useCallback(
     (keys: string[]) => {
@@ -1096,43 +1116,28 @@ function EditorSurface() {
   );
 
   const onEdgesChange = useCallback(
-    (changes: EdgeChange<Edge>[]) => {
+    (changes: EdgeChange<TransitionBundleEdge>[]) => {
       if (simulating) return;
-      const nextEdges = applyEdgeChanges(changes, edges);
       const removed: string[] = [];
       for (const change of changes) {
-        if (change.type === 'remove') removed.push(change.id);
-      }
-      const selectionChanged = changes.some(
-        (change) => change.type === 'select',
-      );
-      if (selectionChanged) {
-        const nextSelectedTransitionIds = new Set(
-          nextEdges.filter((edge) => edge.selected).map((edge) => edge.id),
-        );
-        const mostRecentlySelected = changes.findLast(
-          (change) => change.type === 'select' && change.selected,
-        );
-        setSelectedTransitionIds(nextSelectedTransitionIds);
-        setSelection((current) => {
-          if (mostRecentlySelected?.type === 'select') {
-            return { kind: 'transition', id: mostRecentlySelected.id };
-          }
-          if (
-            current?.kind === 'transition' &&
-            !nextSelectedTransitionIds.has(current.id)
-          ) {
-            const fallback = [...nextSelectedTransitionIds].at(-1);
-            return fallback
-              ? { kind: 'transition', id: fallback }
-              : { kind: 'machine', id: 'machine' };
-          }
-          return current;
-        });
+        if (change.type !== 'remove') continue;
+        const route = edges.find((edge) => edge.id === change.id);
+        const routeTransitions = route?.data?.transitions ?? [];
+        const selectedId =
+          selection?.kind === 'transition' &&
+          routeTransitions.some(({ id }) => id === selection.id)
+            ? selection.id
+            : routeTransitions.length === 1
+              ? routeTransitions[0].id
+              : null;
+        if (selectedId) removed.push(selectedId);
+        else if (routeTransitions.length > 1) {
+          showIssues(['Choose an event label before deleting this route.']);
+        }
       }
       if (removed.length) removeTransitions(removed);
     },
-    [edges, removeTransitions, simulating],
+    [edges, removeTransitions, selection, showIssues, simulating],
   );
 
   const addStateAt = useCallback(
@@ -1867,14 +1872,26 @@ function EditorSurface() {
             </div>
           )}
 
-          <ReactFlow<StateFlowNode, Edge>
+          <ReactFlow<StateFlowNode, TransitionBundleEdge>
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             onNodesChange={onNodesChange}
             onNodeDragStart={beginGraphTransaction}
             onNodeDragStop={commitGraphTransaction}
             onEdgesChange={onEdgesChange}
+            onEdgeClick={(_, edge) => {
+              const transitionIds =
+                edge.data?.transitions.map(({ id }) => id) ?? [];
+              if (transitionIds.length === 0) return;
+              const currentId =
+                selection?.kind === 'transition' &&
+                transitionIds.includes(selection.id)
+                  ? selection.id
+                  : transitionIds[0];
+              selectEditorItem({ kind: 'transition', id: currentId });
+            }}
             onConnect={(connection) => {
               if (simulating) return;
               const source = graph.states.find(
@@ -1920,6 +1937,7 @@ function EditorSurface() {
             nodesDraggable={!simulating}
             nodesConnectable={!simulating}
             elementsSelectable
+            elevateEdgesOnSelect={false}
             selectionOnDrag
             selectionMode={SelectionMode.Partial}
             panOnDrag={[1]}
@@ -2112,6 +2130,7 @@ function EditorSurface() {
               onUpdate={(patch) => updateState(selectedState.key, patch)}
               onError={(message) => showIssues([message])}
               actionNameSuggestions={actionNameSuggestions}
+              actionParameterSuggestions={actionParameterSuggestions}
             />
           ) : selectedTransition ? (
             <TransitionInspector
@@ -2124,6 +2143,7 @@ function EditorSurface() {
               }
               onError={(message) => showIssues([message])}
               actionNameSuggestions={actionNameSuggestions}
+              actionParameterSuggestions={actionParameterSuggestions}
               eventNameSuggestions={eventNameSuggestions}
               onDelete={() => removeTransitions([selectedTransition.id])}
             />
@@ -2322,6 +2342,7 @@ function StateInspector({
   onUpdate,
   onError,
   actionNameSuggestions,
+  actionParameterSuggestions,
 }: {
   state: GraphState;
   initial: boolean;
@@ -2335,6 +2356,7 @@ function StateInspector({
   onUpdate: (patch: Partial<GraphState>) => void;
   onError: (message: string) => void;
   actionNameSuggestions: string[];
+  actionParameterSuggestions: string[];
 }) {
   return (
     <>
@@ -2384,6 +2406,7 @@ function StateInspector({
           <ActionListEditor
             actions={state.entryActions}
             suggestions={actionNameSuggestions}
+            parameterSuggestions={actionParameterSuggestions}
             title="Entry actions"
             addLabel="Add entry action"
             scopeLabel="Entry action"
@@ -2394,6 +2417,7 @@ function StateInspector({
           <ActionListEditor
             actions={state.exitActions}
             suggestions={actionNameSuggestions}
+            parameterSuggestions={actionParameterSuggestions}
             title="Exit actions"
             addLabel="Add exit action"
             scopeLabel="Exit action"
@@ -2463,6 +2487,7 @@ function TransitionInspector({
   onError,
   onDelete,
   actionNameSuggestions,
+  actionParameterSuggestions,
   eventNameSuggestions,
 }: {
   transition: GraphTransition;
@@ -2471,6 +2496,7 @@ function TransitionInspector({
   onError: (message: string) => void;
   onDelete: () => void;
   actionNameSuggestions: string[];
+  actionParameterSuggestions: string[];
   eventNameSuggestions: string[];
 }) {
   return (
@@ -2501,6 +2527,7 @@ function TransitionInspector({
         <ActionListEditor
           actions={transition.actions}
           suggestions={actionNameSuggestions}
+          parameterSuggestions={actionParameterSuggestions}
           onChange={onUpdateActions}
           onError={onError}
         />

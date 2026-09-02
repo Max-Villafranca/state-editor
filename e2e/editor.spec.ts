@@ -219,7 +219,7 @@ test('state and transition actions remain compact and export clean XState JSON',
   });
   await expect(page.getByText('Imported crmWorkflow.json')).toBeVisible();
 
-  await page.locator('.react-flow__edge-textbg').click();
+  await page.getByRole('button', { name: 'Select transition PROCESS' }).click();
   await expect(page.getByText('Selected transition')).toBeVisible();
   await expectSuggestion(page.getByLabel('Transition event'), 'PROCESS');
   await page.getByRole('button', { name: 'Add action' }).click();
@@ -251,6 +251,22 @@ test('state and transition actions remain compact and export clean XState JSON',
   await page.getByRole('button', { name: 'Add entry action' }).click();
   await page.getByLabel('Entry action 1 name').fill('initializeState');
   await page.getByLabel('Entry action 1 name').press('Tab');
+  const entryActions = page.locator('section').filter({
+    has: page.getByText('Entry actions', { exact: true }),
+  });
+  await entryActions.getByRole('button', { name: 'Add', exact: true }).click();
+  const entryParameterKey = page.getByLabel('initializeState parameter key');
+  await expectSuggestion(entryParameterKey, 'cooldownMinutes');
+  const entryParameterValue = page.getByLabel(
+    'initializeState parameter1 value',
+  );
+  const entryKeyBox = await requiredBox(entryParameterKey);
+  const entryValueBox = await requiredBox(entryParameterValue);
+  expect(entryValueBox.y).toBeGreaterThan(entryKeyBox.y + entryKeyBox.height);
+  expect(entryValueBox.width).toBeGreaterThan(entryKeyBox.width);
+  await page
+    .getByRole('button', { name: 'Remove parameter1 parameter' })
+    .click();
   await page.getByRole('button', { name: 'Add exit action' }).click();
   await page.getByLabel('Exit action 1 name').fill('cleanupState');
   await page.getByLabel('Exit action 1 name').press('Tab');
@@ -281,6 +297,79 @@ test('state and transition actions remain compact and export clean XState JSON',
     ),
   ).toBeVisible();
   await expect(page.getByText('2 actions', { exact: true })).toBeVisible();
+});
+
+test('parallel transitions share one route while reciprocal routes stay separate', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'parallel-routes.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        id: 'parallelRoutes',
+        initial: 'waiting',
+        states: {
+          waiting: {
+            on: {
+              ANSWERED: { target: 'connected' },
+              VOICEMAIL: { target: 'connected' },
+            },
+          },
+          connected: {
+            on: { RETRY: { target: 'waiting' } },
+          },
+        },
+      }),
+    ),
+  });
+  await expect(page.getByText('Imported parallel-routes.json')).toBeVisible();
+  await page.waitForTimeout(350);
+
+  await expect(page.locator('.react-flow__edge')).toHaveCount(2);
+  await expect(
+    page.getByRole('button', { name: 'Select transition ANSWERED' }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Select transition VOICEMAIL' }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Select transition RETRY' }),
+  ).toBeVisible();
+
+  await page
+    .getByRole('button', { name: 'Select transition VOICEMAIL' })
+    .click();
+  await expect(page.getByLabel('Transition event')).toHaveValue('VOICEMAIL');
+
+  const routeLabel = page.getByLabel('Transitions from waiting to connected');
+  const routeLabelVisuals = await routeLabel.evaluate((element) => {
+    const stateNode = document.querySelector('.react-flow__node > div');
+    const labelStyle = getComputedStyle(element);
+    return {
+      borderWidth: labelStyle.borderTopWidth,
+      labelBackground: labelStyle.backgroundColor,
+      stateBackground: stateNode
+        ? getComputedStyle(stateNode).backgroundColor
+        : null,
+      zIndex: labelStyle.zIndex,
+    };
+  });
+  expect(routeLabelVisuals).toMatchObject({
+    borderWidth: '0px',
+    zIndex: '20',
+  });
+  expect(routeLabelVisuals.labelBackground).not.toBe(
+    routeLabelVisuals.stateBackground,
+  );
+
+  const paths = await page
+    .locator('.react-flow__edge-path')
+    .evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute('d')),
+    );
+  expect(new Set(paths).size).toBe(2);
 });
 
 test('drag selection moves multiple nodes while middle-click and Space drag pan', async ({

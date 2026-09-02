@@ -1,7 +1,7 @@
 'use client';
 
 import { ArrowDown, ArrowUp, Plus, Trash2, X } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -44,9 +44,8 @@ function CommitInput({
 }) {
   const [draft, setDraft] = useState(value);
   const cancelCommit = useRef(false);
-  const listId = suggestions.length
-    ? `suggestions-${ariaLabel.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
-    : undefined;
+  const suggestionId = useId().replace(/:/g, '');
+  const listId = suggestions.length ? `suggestions-${suggestionId}` : undefined;
 
   const commit = () => {
     if (cancelCommit.current) {
@@ -176,6 +175,7 @@ function ActionParamValueInput({
 export function ActionListEditor({
   actions,
   suggestions,
+  parameterSuggestions,
   title = 'Actions',
   addLabel = 'Add action',
   scopeLabel = 'Action',
@@ -186,6 +186,7 @@ export function ActionListEditor({
 }: {
   actions: GraphAction[];
   suggestions: string[];
+  parameterSuggestions: string[];
   title?: string;
   addLabel?: string;
   scopeLabel?: string;
@@ -340,64 +341,83 @@ export function ActionListEditor({
                 {Object.entries(params).map(([key, value]) => (
                   <div
                     key={key}
-                    className="grid grid-cols-[minmax(0,1fr)_72px_minmax(0,1fr)_24px] items-center gap-1"
+                    className="space-y-1.5 rounded-lg border border-[var(--editor-border)] bg-[var(--editor-panel)] p-2"
                   >
-                    <CommitInput
-                      value={key}
-                      onCommit={(nextKey) =>
-                        renameParameter(action, key, nextKey)
-                      }
-                      className="h-7 px-2 font-mono text-[11px]"
-                      ariaLabel={`${action.type || 'Action'} parameter key`}
-                    />
-                    <select
-                      value={actionParamKind(value)}
-                      onChange={(event) =>
-                        updateAction(action.id, {
-                          params: {
-                            ...params,
-                            [key]: actionParamDefault(
-                              event.target.value as ActionParamKind,
-                            ),
-                          },
-                        })
-                      }
-                      className="h-7 rounded-lg border border-input bg-transparent px-1 text-[10px] outline-none focus:border-ring focus:ring-2 focus:ring-ring/30 dark:bg-input/30"
-                      aria-label={`${action.type || 'Action'} ${key} type`}
-                    >
-                      <option value="text">Text</option>
-                      <option value="number">Number</option>
-                      <option value="boolean">Boolean</option>
-                      <option value="null">Null</option>
-                      <option value="json">JSON</option>
-                    </select>
-                    <ActionParamValueInput
-                      actionType={action.type}
-                      paramKey={key}
-                      value={value}
-                      onChange={(nextValue) =>
-                        updateAction(action.id, {
-                          params: { ...params, [key]: nextValue },
-                        })
-                      }
-                      onError={onError}
-                    />
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      onClick={() => {
-                        const { [key]: _removed, ...remainingParams } = params;
-                        updateAction(action.id, {
-                          params:
-                            Object.keys(remainingParams).length > 0
-                              ? remainingParams
-                              : undefined,
-                        });
-                      }}
-                      aria-label={`Remove ${key} parameter`}
-                    >
-                      <X />
-                    </Button>
+                    <div className="grid grid-cols-[minmax(0,1fr)_82px_24px] items-end gap-1.5">
+                      <div className="min-w-0 space-y-1">
+                        <span className="block text-[9px] font-semibold uppercase tracking-[0.1em] text-slate-400 dark:text-slate-500">
+                          Name
+                        </span>
+                        <CommitInput
+                          value={key}
+                          onCommit={(nextKey) =>
+                            renameParameter(action, key, nextKey)
+                          }
+                          suggestions={parameterSuggestions}
+                          className="h-7 px-2 font-mono text-[11px]"
+                          ariaLabel={`${action.type || 'Action'} parameter key`}
+                        />
+                      </div>
+                      <label className="space-y-1">
+                        <span className="block text-[9px] font-semibold uppercase tracking-[0.1em] text-slate-400 dark:text-slate-500">
+                          Type
+                        </span>
+                        <select
+                          value={actionParamKind(value)}
+                          onChange={(event) =>
+                            updateAction(action.id, {
+                              params: {
+                                ...params,
+                                [key]: actionParamDefault(
+                                  event.target.value as ActionParamKind,
+                                ),
+                              },
+                            })
+                          }
+                          className="h-7 w-full rounded-lg border border-input bg-transparent px-1 text-[10px] outline-none focus:border-ring focus:ring-2 focus:ring-ring/30 dark:bg-input/30"
+                          aria-label={`${action.type || 'Action'} ${key} type`}
+                        >
+                          <option value="text">Text</option>
+                          <option value="number">Number</option>
+                          <option value="boolean">Boolean</option>
+                          <option value="null">Null</option>
+                          <option value="json">JSON</option>
+                        </select>
+                      </label>
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        onClick={() => {
+                          const { [key]: _removed, ...remainingParams } =
+                            params;
+                          updateAction(action.id, {
+                            params:
+                              Object.keys(remainingParams).length > 0
+                                ? remainingParams
+                                : undefined,
+                          });
+                        }}
+                        aria-label={`Remove ${key} parameter`}
+                      >
+                        <X />
+                      </Button>
+                    </div>
+                    <div className="block space-y-1">
+                      <span className="block text-[9px] font-semibold uppercase tracking-[0.1em] text-slate-400 dark:text-slate-500">
+                        Value
+                      </span>
+                      <ActionParamValueInput
+                        actionType={action.type}
+                        paramKey={key}
+                        value={value}
+                        onChange={(nextValue) =>
+                          updateAction(action.id, {
+                            params: { ...params, [key]: nextValue },
+                          })
+                        }
+                        onError={onError}
+                      />
+                    </div>
                   </div>
                 ))}
               </div>
