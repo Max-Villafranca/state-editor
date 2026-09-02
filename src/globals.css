@@ -90,7 +90,7 @@ body {
   --sidebar-ring: oklch(0.708 0 0);
   --editor-app: #f1f5f9;
   --editor-chrome: #ffffff;
-  --editor-canvas: #f8fafc;
+  --editor-canvas: oklch(0.975 0.003 255);
   --editor-panel: #ffffff;
   --editor-panel-subtle: #f8fafc;
   --editor-border: #e2e8f0;
@@ -140,7 +140,7 @@ body {
   --sidebar-ring: oklch(0.7 0.2 291);
   --editor-app: #090e1a;
   --editor-chrome: #101827;
-  --editor-canvas: #0c1322;
+  --editor-canvas: oklch(0.185 0.003 265);
   --editor-panel: #111a2b;
   --editor-panel-subtle: #172135;
   --editor-border: #29354b;

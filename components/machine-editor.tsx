@@ -1,5 +1,4 @@
 import {
-  Background,
   ControlButton,
   Controls,
   Handle,
@@ -1961,7 +1960,6 @@ function EditorSurface() {
             defaultEdgeOptions={{ markerEnd: { type: MarkerType.ArrowClosed } }}
             deleteKeyCode={simulating ? null : ['Backspace', 'Delete']}
           >
-            <Background color="var(--editor-grid)" gap={22} size={1.2} />
             {minimapVisible && (
               <MiniMap
                 pannable
