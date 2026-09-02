@@ -20,6 +20,9 @@ async function createMachine(page: import('@playwright/test').Page) {
   await expect(page.getByRole('textbox', { name: 'Machine name' })).toHaveValue(
     'crmWorkflow',
   );
+  await expect(
+    page.getByText(/use Add state or double-click empty canvas/i),
+  ).toHaveCount(0);
 }
 
 test('a fresh workspace is blocked until a machine is created or opened', async ({
@@ -33,6 +36,9 @@ test('a fresh workspace is blocked until a machine is created or opened', async 
   ).toBeVisible();
   await expect(
     page.getByRole('heading', { name: 'Create or open a machine' }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/use Add state or double-click empty canvas/i),
   ).toBeVisible();
   await expect(page.getByRole('textbox', { name: 'Machine id' })).toHaveCount(
     0,
