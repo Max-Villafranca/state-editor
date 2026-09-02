@@ -99,6 +99,10 @@ body {
   --editor-edge-active: #7c3aed;
   --editor-edge-active-outline: #5b21b6;
   --editor-edge-glow: drop-shadow(0 0 3px rgba(124, 58, 237, 0.45));
+  --editor-analysis: #e11d48;
+  --editor-analysis-glow: drop-shadow(0 0 4px rgba(225, 29, 72, 0.42));
+  --editor-analysis-context: #d97706;
+  --editor-analysis-context-glow: drop-shadow(0 0 3px rgba(217, 119, 6, 0.34));
   --editor-edge-label: #344054;
   --editor-edge-label-bg: #e9eef4;
   --editor-minimap-node: #cbd5e1;
@@ -149,6 +153,10 @@ body {
   --editor-edge-active: #a78bfa;
   --editor-edge-active-outline: #7c3aed;
   --editor-edge-glow: drop-shadow(0 0 4px rgba(167, 139, 250, 0.5));
+  --editor-analysis: #fb7185;
+  --editor-analysis-glow: drop-shadow(0 0 5px rgba(251, 113, 133, 0.5));
+  --editor-analysis-context: #fbbf24;
+  --editor-analysis-context-glow: drop-shadow(0 0 4px rgba(251, 191, 36, 0.4));
   --editor-edge-label: #d8e0ec;
   --editor-edge-label-bg: #131b2b;
   --editor-minimap-node: #64748b;

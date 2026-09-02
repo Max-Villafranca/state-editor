@@ -386,6 +386,164 @@ test('parallel transitions share one route while reciprocal routes stay separate
   expect(new Set(paths).size).toBe(2);
 });
 
+test('machine analysis separates cycles, paths, and node connections', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'analysis.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        id: 'analysis',
+        initial: 'start',
+        states: {
+          start: {
+            on: {
+              ENTER: { target: 'A' },
+              DIRECT: { target: 'done' },
+            },
+          },
+          A: { on: { NEXT: { target: 'B' } } },
+          B: {
+            on: {
+              RETRY: { target: 'A' },
+              FINISH: { target: 'done' },
+            },
+          },
+          done: { type: 'final' },
+        },
+      }),
+    ),
+  });
+
+  await page.getByRole('tab', { name: 'Analysis' }).click();
+  await expect(
+    page
+      .getByRole('tablist', { name: 'Analysis view' })
+      .getByRole('tab')
+      .allTextContents(),
+  ).resolves.toEqual(['Paths2', 'Nodes4', 'Cycles1']);
+  await expect(page.getByRole('tab', { name: /^Paths/ })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await expect(page.getByText('Length').first()).toBeVisible();
+  await expect(page.getByText('3', { exact: true })).toBeVisible();
+  await expect(page.getByText('Ends at').first()).toBeVisible();
+  await expect(page.locator('aside').getByText('Final state')).toHaveCount(0);
+  await expect(page.locator('aside').getByText('Terminal state')).toHaveCount(
+    0,
+  );
+
+  const longestPath = page.locator('[data-analysis-path="1"]');
+  await longestPath.click();
+  await expect(longestPath).toHaveAttribute('aria-pressed', 'true');
+  for (const state of ['start', 'A', 'B', 'done']) {
+    await expect(
+      page.locator(`.react-flow__node[data-id="${state}"] > div`),
+    ).toHaveAttribute('data-analysis-highlighted', 'true');
+  }
+  for (const route of ['start->A', 'A->B', 'B->done']) {
+    await expect(
+      page.locator(`[data-transition-route="${route}"]`),
+    ).toHaveAttribute('data-analysis-highlighted', 'true');
+  }
+
+  await page.getByRole('tab', { name: /^Nodes/ }).click();
+  await expect(page.getByRole('button', { name: 'Incoming' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  const nodeA = page.getByRole('button', { name: 'Locate node A' });
+  await nodeA.click();
+  await expect(nodeA).toHaveAttribute('aria-pressed', 'true');
+  await expect(
+    page.locator('.react-flow__node[data-id="A"] > div'),
+  ).toHaveAttribute('data-analysis-highlighted', 'true');
+  for (const route of ['start->A', 'B->A']) {
+    await expect(
+      page.locator(`[data-transition-route="${route}"]`),
+    ).toHaveAttribute('data-analysis-highlighted', 'true');
+  }
+
+  await page.getByRole('button', { name: 'Outgoing' }).click();
+  await expect(page.getByRole('button', { name: 'Outgoing' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await nodeA.click();
+  await expect(page.locator('[data-transition-route="A->B"]')).toHaveAttribute(
+    'data-analysis-highlighted',
+    'true',
+  );
+
+  await page.getByRole('tab', { name: /^Cycles/ }).click();
+  const cycle = page.getByRole('button', {
+    name: 'Highlight cycle 1: entry 1, cycle 2, exit 1',
+  });
+  await expect(cycle).toBeVisible();
+  await expect(cycle.getByText('Entry')).toBeVisible();
+  await expect(cycle.getByText('Cycle')).toBeVisible();
+  await expect(cycle.getByText('Exit')).toBeVisible();
+  await expect(cycle.getByText('done')).toBeVisible();
+  await expect(longestPath).toHaveCount(0);
+  await cycle.click();
+  await expect(cycle).toHaveAttribute('aria-pressed', 'true');
+  for (const state of ['A', 'B']) {
+    await expect(
+      page.locator(`.react-flow__node[data-id="${state}"] > div`),
+    ).toHaveAttribute('data-analysis-highlighted', 'true');
+  }
+  for (const route of ['A->B', 'B->A']) {
+    await expect(
+      page.locator(`[data-transition-route="${route}"]`),
+    ).toHaveAttribute('data-analysis-highlighted', 'true');
+  }
+  for (const state of ['start', 'done']) {
+    await expect(
+      page.locator(`.react-flow__node[data-id="${state}"] > div`),
+    ).toHaveAttribute('data-analysis-context-highlighted', 'true');
+  }
+  for (const route of ['start->A', 'B->done']) {
+    await expect(
+      page.locator(`[data-transition-route="${route}"]`),
+    ).toHaveAttribute('data-analysis-context-highlighted', 'true');
+  }
+
+  const edgeLayer = async (routeId: string) =>
+    page
+      .locator(`.react-flow__edge[data-id="${routeId}"]`)
+      .evaluate((element) => {
+        const edgeLayerElement = element.parentElement;
+        return edgeLayerElement
+          ? Number(getComputedStyle(edgeLayerElement).zIndex)
+          : Number.NaN;
+      });
+  const labelLayer = async (route: string) =>
+    page
+      .locator(`[data-transition-route="${route}"]`)
+      .evaluate((element) => Number(getComputedStyle(element).zIndex));
+
+  expect(await edgeLayer('transition-route:A:B')).toBeGreaterThan(
+    await edgeLayer('transition-route:start:A'),
+  );
+  expect(await edgeLayer('transition-route:start:A')).toBeGreaterThan(
+    await edgeLayer('transition-route:start:done'),
+  );
+  expect(await labelLayer('A->B')).toBeGreaterThan(
+    await labelLayer('start->A'),
+  );
+  expect(await labelLayer('start->A')).toBeGreaterThan(
+    await labelLayer('start->done'),
+  );
+  await expect(page.getByRole('tab', { name: 'Analysis' })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await expect(page.getByText('Issues', { exact: true })).toHaveCount(0);
+});
+
 test('drag selection moves multiple nodes while middle-click and Space drag pan', async ({
   page,
 }) => {

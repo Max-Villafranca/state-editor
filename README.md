@@ -11,6 +11,7 @@ A lightweight, local-first visual editor for small XState v6 state machines. It 
 - Entry, exit, and transition actions with optional JSON parameters
 - State and machine descriptions, tags, and metadata
 - Visual node creation, duplication, renaming, positioning, and multi-selection
+- Graph analysis for paths, node connections, and cycles with entry and exit context
 - Manual simulation, undo/redo, minimap control, and light/dark themes
 - Silent local recovery between browser sessions
 - Project files that retain editor layout (`.se.json`)
@@ -45,6 +46,7 @@ Local browser storage is used only as automatic recovery; it is not a replacemen
 - Middle-drag or hold Space while dragging to pan.
 - Use `Ctrl/Cmd+Z` to undo and `Ctrl/Cmd+Shift+Z` to redo.
 - Select a state or transition to edit its details in the inspector.
+- Open **Analysis** to compare paths, inspect incoming or outgoing connections, and highlight cycle structure on the canvas.
 
 ## Compatibility
 

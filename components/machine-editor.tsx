@@ -55,6 +55,11 @@ import {
 import { Button } from '@/components/ui/button';
 import { ActionListEditor } from '@/components/action-list-editor';
 import {
+  MachineAnalysisPanel,
+  type AnalysisView,
+  type StateDirection,
+} from '@/components/machine-analysis-panel';
+import {
   TransitionEdge,
   type TransitionBundleEdge,
 } from '@/components/transition-edge';
@@ -92,6 +97,7 @@ import {
   type GraphTransition,
   type JsonValue,
 } from '@/lib/machine-json';
+import { analyzeMachine } from '@/lib/machine-analysis';
 import { useUndoableState } from '@/lib/undo-history';
 import { createTransitionRoutes } from '@/lib/transition-routes';
 
@@ -189,6 +195,8 @@ type StateNodeData = Record<string, unknown> & {
   current: boolean;
   editing: boolean;
   simulating: boolean;
+  analysisHighlighted: boolean;
+  analysisContextHighlighted: boolean;
   onBeginRename: () => void;
   onCommitRename: (value: string) => void;
   onCancelRename: () => void;
@@ -265,16 +273,24 @@ function FinalStateMark() {
 function StateNode({ data, selected }: NodeProps<StateFlowNode>) {
   return (
     <div
+      data-analysis-highlighted={data.analysisHighlighted || undefined}
+      data-analysis-context-highlighted={
+        data.analysisContextHighlighted || undefined
+      }
       className={`min-w-48 rounded-2xl border bg-[var(--editor-panel)] px-4 py-3 shadow-[var(--editor-node-shadow)] transition-all ${
         data.current
           ? 'border-amber-400 ring-4 ring-amber-300/30 shadow-[0_10px_36px_rgb(245_158_11/18%)] dark:ring-amber-400/20'
-          : selected
-            ? 'border-violet-500 ring-4 ring-violet-500/10 dark:border-violet-400 dark:ring-violet-400/20'
-            : data.unreachable
-              ? 'border-orange-300 dark:border-orange-500'
-              : data.final
-                ? 'border-emerald-300 dark:border-emerald-500'
-                : 'border-[var(--editor-border)]'
+          : data.analysisHighlighted
+            ? 'border-[var(--editor-analysis)] ring-4 ring-rose-500/15 shadow-[0_10px_32px_rgb(225_29_72/16%)] dark:ring-rose-400/20'
+            : data.analysisContextHighlighted
+              ? 'border-[var(--editor-analysis-context)] ring-2 ring-amber-400/10 dark:ring-amber-300/15'
+              : selected
+                ? 'border-violet-500 ring-4 ring-violet-500/10 dark:border-violet-400 dark:ring-violet-400/20'
+                : data.unreachable
+                  ? 'border-orange-300 dark:border-orange-500'
+                  : data.final
+                    ? 'border-emerald-300 dark:border-emerald-500'
+                    : 'border-[var(--editor-border)]'
       }`}
     >
       {!data.simulating && (
@@ -646,6 +662,20 @@ function EditorSurface() {
   const [expandedActionIds, setExpandedActionIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const [rightPanelMode, setRightPanelMode] = useState<
+    'properties' | 'analysis'
+  >('properties');
+  const [analysisView, setAnalysisView] = useState<AnalysisView>('paths');
+  const [stateDirection, setStateDirection] =
+    useState<StateDirection>('incoming');
+  const [analysisHighlight, setAnalysisHighlight] = useState<{
+    kind: 'path' | 'node' | 'cycle';
+    key: string;
+    states: string[];
+    routes: string[];
+    contextStates?: string[];
+    contextRoutes?: string[];
+  } | null>(null);
   const [nodeRuntimeById, setNodeRuntimeById] = useState<
     Map<string, StateFlowNodeRuntime>
   >(() => new Map());
@@ -931,6 +961,23 @@ function EditorSurface() {
     [clearFeedback, graph.states, selectEditorItem, setGraph, showIssues],
   );
 
+  const analysisHighlightedStateKeys = useMemo(
+    () => new Set(analysisHighlight?.states ?? []),
+    [analysisHighlight],
+  );
+  const analysisHighlightedRouteKeys = useMemo(
+    () => new Set(analysisHighlight?.routes ?? []),
+    [analysisHighlight],
+  );
+  const analysisContextStateKeys = useMemo(
+    () => new Set(analysisHighlight?.contextStates ?? []),
+    [analysisHighlight],
+  );
+  const analysisContextRouteKeys = useMemo(
+    () => new Set(analysisHighlight?.contextRoutes ?? []),
+    [analysisHighlight],
+  );
+
   const nodes = useMemo<StateFlowNode[]>(
     () =>
       graph.states.map((state) => {
@@ -951,6 +998,8 @@ function EditorSurface() {
             current: simulationState === state.key,
             editing: renamingState === state.key,
             simulating,
+            analysisHighlighted: analysisHighlightedStateKeys.has(state.key),
+            analysisContextHighlighted: analysisContextStateKeys.has(state.key),
             onBeginRename: () => !simulating && setRenamingState(state.key),
             onCommitRename: (value: string) => renameState(state.key, value),
             onCancelRename: () => setRenamingState(null),
@@ -960,6 +1009,8 @@ function EditorSurface() {
     [
       graph.initial,
       graph.states,
+      analysisHighlightedStateKeys,
+      analysisContextStateKeys,
       nodeRuntimeById,
       renameState,
       renamingState,
@@ -974,6 +1025,7 @@ function EditorSurface() {
     () => createTransitionRoutes(graph.transitions),
     [graph.transitions],
   );
+  const machineAnalysis = useMemo(() => analyzeMachine(graph), [graph]);
 
   const edges = useMemo<TransitionBundleEdge[]>(() => {
     if (simulating) return [];
@@ -981,6 +1033,19 @@ function EditorSurface() {
       const selected = route.transitions.some((transition) =>
         selectedTransitionIds.has(transition.id),
       );
+      const analysisHighlighted = analysisHighlightedRouteKeys.has(
+        `${route.source}\u0000${route.target}`,
+      );
+      const analysisContextHighlighted = analysisContextRouteKeys.has(
+        `${route.source}\u0000${route.target}`,
+      );
+      const emphasized =
+        selected || analysisHighlighted || analysisContextHighlighted;
+      const emphasisColor = analysisHighlighted
+        ? 'var(--editor-analysis)'
+        : analysisContextHighlighted
+          ? 'var(--editor-analysis-context)'
+          : 'var(--editor-edge-active)';
       return {
         id: route.id,
         source: route.source,
@@ -990,11 +1055,20 @@ function EditorSurface() {
         animated: false,
         deletable: true,
         selectable: true,
+        zIndex: analysisHighlighted
+          ? 3
+          : analysisContextHighlighted
+            ? 2
+            : selected
+              ? 1
+              : 0,
         data: {
           sourceLabel: route.source,
           targetLabel: route.target,
           laneOffset: route.laneOffset,
           reciprocal: route.reciprocal,
+          analysisHighlighted,
+          analysisContextHighlighted,
           transitions: route.transitions.map((transition) => ({
             id: transition.id,
             event: transition.event,
@@ -1005,18 +1079,37 @@ function EditorSurface() {
         },
         markerEnd: {
           type: MarkerType.ArrowClosed,
-          color: selected ? 'var(--editor-edge-active)' : 'var(--editor-edge)',
-          width: selected ? 24 : 20,
-          height: selected ? 24 : 20,
+          color: emphasized ? emphasisColor : 'var(--editor-edge)',
+          width: emphasized ? 24 : 20,
+          height: emphasized ? 24 : 20,
         },
         style: {
-          strokeWidth: selected ? 3.2 : 1.7,
-          stroke: selected ? 'var(--editor-edge-active)' : 'var(--editor-edge)',
-          filter: selected ? 'var(--editor-edge-glow)' : undefined,
+          strokeWidth: selected
+            ? 3.2
+            : analysisHighlighted
+              ? 2.8
+              : analysisContextHighlighted
+                ? 2.2
+                : 1.7,
+          stroke: emphasized ? emphasisColor : 'var(--editor-edge)',
+          filter: analysisHighlighted
+            ? 'var(--editor-analysis-glow)'
+            : analysisContextHighlighted
+              ? 'var(--editor-analysis-context-glow)'
+              : selected
+                ? 'var(--editor-edge-glow)'
+                : undefined,
         },
       };
     });
-  }, [selectEditorItem, selectedTransitionIds, simulating, transitionRoutes]);
+  }, [
+    analysisHighlightedRouteKeys,
+    analysisContextRouteKeys,
+    selectEditorItem,
+    selectedTransitionIds,
+    simulating,
+    transitionRoutes,
+  ]);
 
   const removeStates = useCallback(
     (keys: string[]) => {
@@ -2120,54 +2213,247 @@ function EditorSurface() {
             <div className="flex flex-1 items-center justify-center px-8 text-center text-sm leading-6 text-slate-400 dark:text-slate-500">
               Create or open a machine to edit its details.
             </div>
-          ) : selectedState ? (
-            <StateInspector
-              state={selectedState}
-              initial={graph.initial === selectedState.key}
-              unreachable={!reachableStateKeys.has(selectedState.key)}
-              outgoingCount={
-                graph.transitions.filter(
-                  (transition) => transition.source === selectedState.key,
-                ).length
-              }
-              onRename={(value) => renameState(selectedState.key, value)}
-              onSetInitial={() => setInitial(selectedState.key)}
-              onToggleFinal={() => toggleFinal(selectedState.key)}
-              onDuplicate={() => duplicateState(selectedState.key)}
-              onDelete={() => removeStates([selectedState.key])}
-              onUpdate={(patch) => updateState(selectedState.key, patch)}
-              onError={(message) => showIssues([message])}
-              actionNameSuggestions={actionNameSuggestions}
-              actionParameterSuggestions={actionParameterSuggestions}
-              expandedActionIds={expandedActionIds}
-              onActionExpandedChange={setActionExpanded}
-            />
-          ) : selectedTransition ? (
-            <TransitionInspector
-              transition={selectedTransition}
-              onRename={(value) =>
-                updateTransitionEvent(selectedTransition.id, value)
-              }
-              onUpdateActions={(actions) =>
-                updateTransitionActions(selectedTransition.id, actions)
-              }
-              onError={(message) => showIssues([message])}
-              actionNameSuggestions={actionNameSuggestions}
-              actionParameterSuggestions={actionParameterSuggestions}
-              expandedActionIds={expandedActionIds}
-              onActionExpandedChange={setActionExpanded}
-              eventNameSuggestions={eventNameSuggestions}
-              onDelete={() => removeTransitions([selectedTransition.id])}
-            />
           ) : (
-            <MachineInspector
-              graph={graph}
-              onRename={renameMachine}
-              onUpdate={(patch) =>
-                setGraph((current) => ({ ...current, ...patch }))
-              }
-              onError={(message) => showIssues([message])}
-            />
+            <>
+              <div
+                className="grid grid-cols-2 border-b border-[var(--editor-border)] bg-[var(--editor-panel)]"
+                role="tablist"
+                aria-label="Right panel mode"
+              >
+                {(['properties', 'analysis'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    role="tab"
+                    aria-selected={rightPanelMode === mode}
+                    onClick={() => {
+                      setRightPanelMode(mode);
+                      if (mode === 'properties') setAnalysisHighlight(null);
+                    }}
+                    className={`relative px-3 py-3 text-xs font-semibold capitalize transition-colors after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 ${
+                      rightPanelMode === mode
+                        ? 'bg-[var(--editor-panel-subtle)] text-slate-800 after:bg-violet-500 dark:text-slate-100 dark:after:bg-violet-400'
+                        : 'text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300'
+                    }`}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+              {rightPanelMode === 'analysis' ? (
+                <MachineAnalysisPanel
+                  analysis={machineAnalysis}
+                  activeView={analysisView}
+                  onActiveViewChange={(view) => {
+                    setAnalysisView(view);
+                    setAnalysisHighlight(null);
+                  }}
+                  stateDirection={stateDirection}
+                  onStateDirectionChange={(direction) => {
+                    setStateDirection(direction);
+                    setAnalysisHighlight(null);
+                  }}
+                  highlightedPath={
+                    analysisHighlight?.kind === 'path'
+                      ? analysisHighlight.key
+                      : null
+                  }
+                  highlightedNode={
+                    analysisHighlight?.kind === 'node'
+                      ? analysisHighlight.key
+                      : null
+                  }
+                  highlightedCycle={
+                    analysisHighlight?.kind === 'cycle'
+                      ? analysisHighlight.key
+                      : null
+                  }
+                  onSelectPath={(path, key) => {
+                    if (
+                      analysisHighlight?.kind === 'path' &&
+                      analysisHighlight.key === key
+                    ) {
+                      setAnalysisHighlight(null);
+                      return;
+                    }
+                    selectEditorItem({ kind: 'machine', id: 'machine' });
+                    setAnalysisHighlight({
+                      kind: 'path',
+                      key,
+                      states: path.states,
+                      routes: path.states
+                        .slice(1)
+                        .map(
+                          (target, index) =>
+                            `${path.states[index]}\u0000${target}`,
+                        ),
+                    });
+                    const pathStates = new Set(path.states);
+                    const pathNodes = nodes.filter(({ id }) =>
+                      pathStates.has(id),
+                    );
+                    if (pathNodes.length) {
+                      requestAnimationFrame(() =>
+                        flow.fitView({
+                          nodes: pathNodes,
+                          padding: 0.3,
+                          maxZoom: 1.05,
+                          duration: 300,
+                        }),
+                      );
+                    }
+                  }}
+                  onHighlightNode={(state) => {
+                    if (
+                      analysisHighlight?.kind === 'node' &&
+                      analysisHighlight.key === state
+                    ) {
+                      setAnalysisHighlight(null);
+                      return;
+                    }
+                    selectEditorItem({ kind: 'machine', id: 'machine' });
+                    const relatedTransitions = graph.transitions.filter(
+                      (transition) =>
+                        stateDirection === 'incoming'
+                          ? transition.target === state
+                          : transition.source === state,
+                    );
+                    setAnalysisHighlight({
+                      kind: 'node',
+                      key: state,
+                      states: [state],
+                      routes: relatedTransitions.map(
+                        (transition) =>
+                          `${transition.source}\u0000${transition.target}`,
+                      ),
+                    });
+                    const framedStates = new Set([
+                      state,
+                      ...relatedTransitions.flatMap((transition) => [
+                        transition.source,
+                        transition.target,
+                      ]),
+                    ]);
+                    const framedNodes = nodes.filter(({ id }) =>
+                      framedStates.has(id),
+                    );
+                    if (framedNodes.length) {
+                      requestAnimationFrame(() =>
+                        flow.fitView({
+                          nodes: framedNodes,
+                          padding: 0.45,
+                          maxZoom: 1.05,
+                          duration: 300,
+                        }),
+                      );
+                    }
+                  }}
+                  onHighlightCycle={(cycle, key) => {
+                    if (
+                      analysisHighlight?.kind === 'cycle' &&
+                      analysisHighlight.key === key
+                    ) {
+                      setAnalysisHighlight(null);
+                      return;
+                    }
+                    selectEditorItem({ kind: 'machine', id: 'machine' });
+                    const cycleStates = new Set(cycle.states);
+                    const cycleRoutes = cycle.states.map(
+                      (source, index) =>
+                        `${source}\u0000${cycle.states[(index + 1) % cycle.states.length]}`,
+                    );
+                    const routesForPath = (path: string[] | null) => {
+                      if (!path) return [];
+                      return path
+                        .slice(1)
+                        .map(
+                          (target, index) => `${path[index]}\u0000${target}`,
+                        );
+                    };
+                    const contextStates = [
+                      ...cycle.entryPath,
+                      ...(cycle.exitPath ?? []),
+                    ].filter((state) => !cycleStates.has(state));
+                    setAnalysisHighlight({
+                      kind: 'cycle',
+                      key,
+                      states: cycle.states,
+                      routes: cycleRoutes,
+                      contextStates,
+                      contextRoutes: [
+                        ...routesForPath(cycle.entryPath),
+                        ...routesForPath(cycle.exitPath),
+                      ],
+                    });
+                    const framedStates = new Set([
+                      ...cycle.states,
+                      ...contextStates,
+                    ]);
+                    const cycleNodes = nodes.filter(({ id }) =>
+                      framedStates.has(id),
+                    );
+                    if (cycleNodes.length) {
+                      requestAnimationFrame(() =>
+                        flow.fitView({
+                          nodes: cycleNodes,
+                          padding: 0.45,
+                          maxZoom: 1.05,
+                          duration: 300,
+                        }),
+                      );
+                    }
+                  }}
+                />
+              ) : selectedState ? (
+                <StateInspector
+                  state={selectedState}
+                  initial={graph.initial === selectedState.key}
+                  unreachable={!reachableStateKeys.has(selectedState.key)}
+                  outgoingCount={
+                    graph.transitions.filter(
+                      (transition) => transition.source === selectedState.key,
+                    ).length
+                  }
+                  onRename={(value) => renameState(selectedState.key, value)}
+                  onSetInitial={() => setInitial(selectedState.key)}
+                  onToggleFinal={() => toggleFinal(selectedState.key)}
+                  onDuplicate={() => duplicateState(selectedState.key)}
+                  onDelete={() => removeStates([selectedState.key])}
+                  onUpdate={(patch) => updateState(selectedState.key, patch)}
+                  onError={(message) => showIssues([message])}
+                  actionNameSuggestions={actionNameSuggestions}
+                  actionParameterSuggestions={actionParameterSuggestions}
+                  expandedActionIds={expandedActionIds}
+                  onActionExpandedChange={setActionExpanded}
+                />
+              ) : selectedTransition ? (
+                <TransitionInspector
+                  transition={selectedTransition}
+                  onRename={(value) =>
+                    updateTransitionEvent(selectedTransition.id, value)
+                  }
+                  onUpdateActions={(actions) =>
+                    updateTransitionActions(selectedTransition.id, actions)
+                  }
+                  onError={(message) => showIssues([message])}
+                  actionNameSuggestions={actionNameSuggestions}
+                  actionParameterSuggestions={actionParameterSuggestions}
+                  expandedActionIds={expandedActionIds}
+                  onActionExpandedChange={setActionExpanded}
+                  eventNameSuggestions={eventNameSuggestions}
+                  onDelete={() => removeTransitions([selectedTransition.id])}
+                />
+              ) : (
+                <MachineInspector
+                  graph={graph}
+                  onRename={renameMachine}
+                  onUpdate={(patch) =>
+                    setGraph((current) => ({ ...current, ...patch }))
+                  }
+                  onError={(message) => showIssues([message])}
+                />
+              )}
+            </>
           )}
         </aside>
       </div>
@@ -2294,7 +2580,7 @@ function MachineInspector({
   return (
     <>
       <InspectorHeader eyebrow="Machine" title={graph.id || 'No machine yet'} />
-      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5 [scrollbar-gutter:stable]">
         <div className="block space-y-1.5">
           <FieldLabel>Machine id</FieldLabel>
           <CommitInput
@@ -2377,7 +2663,7 @@ function StateInspector({
   return (
     <>
       <InspectorHeader eyebrow="Selected state" title={state.key} />
-      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5 [scrollbar-gutter:stable]">
         <div className="block space-y-1.5">
           <FieldLabel>State key</FieldLabel>
           <CommitInput
@@ -2526,7 +2812,7 @@ function TransitionInspector({
   return (
     <>
       <InspectorHeader eyebrow="Selected transition" title={transition.event} />
-      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5 [scrollbar-gutter:stable]">
         <div className="block space-y-1.5">
           <FieldLabel>Event name</FieldLabel>
           <CommitInput
@@ -2596,7 +2882,7 @@ function SimulationPanel({
         eyebrow="Simulation"
         title={currentState?.key ?? 'Unknown state'}
       />
-      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5 [scrollbar-gutter:stable]">
         <div
           className={`rounded-2xl border p-4 ${currentState?.final ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-500/35 dark:bg-emerald-500/10' : 'border-amber-200 bg-amber-50 dark:border-amber-500/35 dark:bg-amber-500/10'}`}
         >

@@ -11,6 +11,8 @@ export type TransitionBundleEdgeData = Record<string, unknown> & {
   targetLabel: string;
   laneOffset: number;
   reciprocal: boolean;
+  analysisHighlighted: boolean;
+  analysisContextHighlighted: boolean;
   transitions: Array<{ id: string; event: string; selected: boolean }>;
   onSelectTransition: (id: string) => void;
 };
@@ -153,9 +155,24 @@ function TransitionEdgeView({
         <fieldset
           aria-label={`Transitions from ${data.sourceLabel} to ${data.targetLabel}`}
           data-transition-route={`${data.sourceLabel}->${data.targetLabel}`}
-          className="nodrag nopan absolute z-20 flex max-w-48 flex-col gap-1 rounded-md border-0 bg-[var(--editor-edge-label-bg)] p-1 shadow-sm"
+          data-analysis-highlighted={data.analysisHighlighted || undefined}
+          data-analysis-context-highlighted={
+            data.analysisContextHighlighted || undefined
+          }
+          className={`nodrag nopan absolute flex max-w-48 flex-col gap-1 rounded-md border-0 bg-[var(--editor-edge-label-bg)] p-1 shadow-sm ${
+            data.analysisHighlighted
+              ? 'ring-2 ring-rose-500/60 dark:ring-rose-400/70'
+              : data.analysisContextHighlighted
+                ? 'ring-1 ring-amber-500/50 dark:ring-amber-300/50'
+                : ''
+          }`}
           style={{
             pointerEvents: 'all',
+            zIndex: data.analysisHighlighted
+              ? 40
+              : data.analysisContextHighlighted
+                ? 30
+                : 20,
             transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
           }}
         >
