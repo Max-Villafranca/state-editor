@@ -2,6 +2,8 @@
 
 A lightweight, local-first visual editor for small XState v6 state machines. It runs entirely in the browser and exports portable MachineJSON without requiring a server or account.
 
+[Open the hosted editor](https://max-villafranca.github.io/state-editor/)
+
 ## What it supports
 
 - Flat state machines with one initial state and multiple final states
