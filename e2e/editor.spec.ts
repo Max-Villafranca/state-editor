@@ -22,6 +22,65 @@ async function createMachine(page: import('@playwright/test').Page) {
   );
 }
 
+test('a fresh workspace is blocked until a machine is created or opened', async ({
+  page,
+}) => {
+  await page.goto('/');
+
+  await expect(page.getByRole('img', { name: 'Mini Map' })).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Show minimap' }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'Create or open a machine' }),
+  ).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Machine id' })).toHaveCount(
+    0,
+  );
+
+  const viewport = page.locator('.react-flow__viewport');
+  const pane = page.locator('.react-flow__pane');
+  const paneBox = await requiredBox(pane);
+  const transformBefore = await viewportTransform(viewport);
+  await dragPointer(
+    page,
+    { x: paneBox.x + 80, y: paneBox.y + 80 },
+    { x: paneBox.x + 150, y: paneBox.y + 130 },
+    'middle',
+  );
+  await expect.poll(() => viewportTransform(viewport)).toBe(transformBefore);
+});
+
+test('a recovered project keeps its project filename after refresh', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'remembered.se.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        format: 'state-editor-project',
+        version: 1,
+        xstateTarget: 'v6-machine-json',
+        machine: { id: 'remembered', initial: 'idle', states: { idle: {} } },
+        editor: {
+          nodes: { idle: { x: 100, y: 100 } },
+          viewport: { x: 0, y: 0, zoom: 1 },
+          selection: { kind: 'machine', id: 'machine' },
+        },
+      }),
+    ),
+  });
+  await expect(
+    page.getByText('State Editor · remembered.se.json'),
+  ).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByText('State Editor · remembered.se.json'),
+  ).toBeVisible();
+});
+
 test('Save, Save As, and Export JSON keep distinct file contracts', async ({
   page,
 }) => {
@@ -121,6 +180,7 @@ test('a machine can be created, simulated, recovered, and resumed', async ({
   await expect(page.locator('.react-flow__edge')).toHaveCount(1);
 
   await page.waitForTimeout(400);
+  await page.getByRole('button', { name: 'Show minimap' }).click();
   await page.getByRole('button', { name: 'Hide minimap' }).click();
   await page.reload();
 
@@ -243,6 +303,7 @@ test('drag selection moves multiple nodes while middle-click and Space drag pan'
     ),
   });
   await expect(page.getByText('Imported selection.json')).toBeVisible();
+  await page.waitForTimeout(350);
 
   const first = page.locator('.react-flow__node[data-id="one"]');
   const second = page.locator('.react-flow__node[data-id="two"]');
@@ -251,11 +312,18 @@ test('drag selection moves multiple nodes while middle-click and Space drag pan'
 
   const firstBox = await requiredBox(first);
   const secondBox = await requiredBox(second);
+  const selectionPaneBox = await requiredBox(page.locator('.react-flow__pane'));
   await dragPointer(
     page,
     {
-      x: Math.min(firstBox.x, secondBox.x) - 16,
-      y: Math.min(firstBox.y, secondBox.y) - 16,
+      x: Math.max(
+        selectionPaneBox.x + 4,
+        Math.min(firstBox.x, secondBox.x) - 16,
+      ),
+      y: Math.max(
+        selectionPaneBox.y + 4,
+        Math.min(firstBox.y, secondBox.y) - 16,
+      ),
     },
     {
       x:

@@ -3,7 +3,7 @@ export const MINIMAP_VISIBILITY_KEY = 'state-editor.minimap-visible';
 type PreferenceStorage = Pick<Storage, 'getItem' | 'setItem'>;
 
 export function readMinimapVisibility(storage: PreferenceStorage) {
-  return storage.getItem(MINIMAP_VISIBILITY_KEY) !== 'hidden';
+  return storage.getItem(MINIMAP_VISIBILITY_KEY) === 'visible';
 }
 
 export function writeMinimapVisibility(

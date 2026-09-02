@@ -72,6 +72,11 @@ import {
   writeMinimapVisibility,
 } from '@/lib/editor-preferences';
 import {
+  forgetProjectFileHandle,
+  recallProjectFileHandle,
+  rememberProjectFileHandle,
+} from '@/lib/project-file-handle';
+import {
   MachineValidationError,
   createEditorProject,
   editorFileToGraph,
@@ -89,6 +94,7 @@ import {
 import { useUndoableState } from '@/lib/undo-history';
 
 const STORAGE_KEY = 'state-editor.project.v1';
+const RECOVERY_FILE_NAME_KEY = 'state-editor.project-file-name.v1';
 const THEME_KEY = 'state-editor.theme';
 
 function createEmptyGraph(): GraphMachine {
@@ -121,6 +127,35 @@ type FilePickerWindow = Window & {
     }>;
   }) => Promise<FileSystemFileHandle>;
 };
+
+type PermissionAwareFileHandle = FileSystemFileHandle & {
+  queryPermission?: (options: {
+    mode: 'readwrite';
+  }) => Promise<PermissionState>;
+  requestPermission?: (options: {
+    mode: 'readwrite';
+  }) => Promise<PermissionState>;
+};
+
+async function hasWritePermission(
+  handle: FileSystemFileHandle,
+  requestIfNeeded: boolean,
+) {
+  const permissionHandle = handle as PermissionAwareFileHandle;
+  if (!permissionHandle.queryPermission) return true;
+  if (
+    (await permissionHandle.queryPermission({ mode: 'readwrite' })) ===
+    'granted'
+  ) {
+    return true;
+  }
+  return Boolean(
+    requestIfNeeded &&
+    permissionHandle.requestPermission &&
+    (await permissionHandle.requestPermission({ mode: 'readwrite' })) ===
+      'granted',
+  );
+}
 
 const PROJECT_FILE_TYPES = [
   {
@@ -617,7 +652,7 @@ function EditorSurface() {
     try {
       return readMinimapVisibility(localStorage);
     } catch {
-      return true;
+      return false;
     }
   });
   const [issues, setIssues] = useState<string[]>([]);
@@ -634,6 +669,7 @@ function EditorSurface() {
   const [activeProjectFileName, setActiveProjectFileName] = useState<
     string | null
   >(null);
+  const [projectFileConnected, setProjectFileConnected] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newMachineName, setNewMachineName] = useState('');
   const [newInitialStateName, setNewInitialStateName] = useState('idle');
@@ -762,8 +798,19 @@ function EditorSurface() {
           selectEditorItem(recovered.selection);
           setViewportState(recovered.viewport);
           void flow.setViewport(recovered.viewport, { duration: 0 });
+          setActiveProjectFileName(
+            localStorage.getItem(RECOVERY_FILE_NAME_KEY),
+          );
           recoveryReady.current = true;
           setRecoveryComplete(true);
+          void recallProjectFileHandle()
+            .then(async (handle) => {
+              if (!handle) return;
+              projectFileHandle.current = handle;
+              setActiveProjectFileName(handle.name);
+              setProjectFileConnected(await hasWritePermission(handle, false));
+            })
+            .catch(() => undefined);
         });
         return () => cancelAnimationFrame(frame);
       } catch {
@@ -777,6 +824,21 @@ function EditorSurface() {
     return () => cancelAnimationFrame(frame);
   }, [flow, resetGraph, selectEditorItem]);
 
+  const persistRecovery = useCallback(() => {
+    if (!recoveryReady.current || !machineReady) return;
+    try {
+      const recovery = createEditorProject(graph, viewport, selection);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(recovery));
+      if (activeProjectFileName) {
+        localStorage.setItem(RECOVERY_FILE_NAME_KEY, activeProjectFileName);
+      } else {
+        localStorage.removeItem(RECOVERY_FILE_NAME_KEY);
+      }
+    } catch {
+      // Recovery is intentionally silent and never replaces an explicit file save.
+    }
+  }, [activeProjectFileName, graph, machineReady, selection, viewport]);
+
   useEffect(() => {
     if (!recoveryReady.current) return;
 
@@ -785,17 +847,23 @@ function EditorSurface() {
       return;
     }
 
-    const timeout = window.setTimeout(() => {
-      try {
-        const recovery = createEditorProject(graph, viewport, selection);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(recovery));
-      } catch {
-        // Recovery is intentionally silent and never replaces an explicit file save.
-      }
-    }, 300);
+    const timeout = window.setTimeout(persistRecovery, 300);
 
     return () => window.clearTimeout(timeout);
-  }, [graph, machineCreated, machineReady, selection, viewport]);
+  }, [machineCreated, machineReady, persistRecovery]);
+
+  useEffect(() => {
+    const flushWhenLeaving = () => persistRecovery();
+    const flushWhenHidden = () => {
+      if (document.visibilityState === 'hidden') persistRecovery();
+    };
+    window.addEventListener('pagehide', flushWhenLeaving);
+    document.addEventListener('visibilitychange', flushWhenHidden);
+    return () => {
+      window.removeEventListener('pagehide', flushWhenLeaving);
+      document.removeEventListener('visibilitychange', flushWhenHidden);
+    };
+  }, [persistRecovery]);
 
   const renameState = useCallback(
     (oldKey: string, requestedKey: string) => {
@@ -1343,6 +1411,9 @@ function EditorSurface() {
     setLastProjectFileHash(null);
     projectFileHandle.current = null;
     setActiveProjectFileName(null);
+    setProjectFileConnected(false);
+    localStorage.removeItem(RECOVERY_FILE_NAME_KEY);
+    void forgetProjectFileHandle().catch(() => undefined);
     setSimulationState(null);
     setRenamingState(null);
     setCreateDialogOpen(false);
@@ -1363,6 +1434,12 @@ function EditorSurface() {
       const pickerWindow = window as FilePickerWindow;
       let handle = saveAs ? null : projectFileHandle.current;
 
+      if (handle && !(await hasWritePermission(handle, true))) {
+        handle = null;
+        projectFileHandle.current = null;
+        setProjectFileConnected(false);
+      }
+
       if (!handle && pickerWindow.showSaveFilePicker) {
         handle = await pickerWindow.showSaveFilePicker({
           suggestedName,
@@ -1374,6 +1451,8 @@ function EditorSurface() {
         await writeJsonFile(handle, project);
         projectFileHandle.current = handle;
         setActiveProjectFileName(handle.name);
+        setProjectFileConnected(true);
+        void rememberProjectFileHandle(handle).catch(() => undefined);
         clearFeedback(
           saveAs ? `Saved as ${handle.name}` : `Saved ${handle.name}`,
         );
@@ -1447,11 +1526,20 @@ function EditorSurface() {
 
       if (opened.kind === 'project') {
         projectFileHandle.current = fileHandle;
-        setActiveProjectFileName(fileHandle?.name ?? null);
+        setActiveProjectFileName(file.name);
+        setProjectFileConnected(Boolean(fileHandle));
+        if (fileHandle) {
+          void rememberProjectFileHandle(fileHandle).catch(() => undefined);
+        } else {
+          void forgetProjectFileHandle().catch(() => undefined);
+        }
         applyLoadedProject(opened, `Opened ${file.name}`);
       } else {
         projectFileHandle.current = null;
         setActiveProjectFileName(null);
+        setProjectFileConnected(false);
+        localStorage.removeItem(RECOVERY_FILE_NAME_KEY);
+        void forgetProjectFileHandle().catch(() => undefined);
         resetGraph(opened.graph);
         selectEditorItem(opened.selection);
         setViewportState(opened.viewport);
@@ -1635,9 +1723,11 @@ function EditorSurface() {
                 size="sm"
                 onClick={() => void saveProjectFile(false)}
                 title={
-                  activeProjectFileName
+                  activeProjectFileName && projectFileConnected
                     ? `Save project to ${activeProjectFileName}`
-                    : 'Choose where to save the State Editor project'
+                    : activeProjectFileName
+                      ? `Reconnect ${activeProjectFileName} when saving`
+                      : 'Choose where to save the State Editor project'
                 }
                 disabled={!machineReady}
               >
@@ -1739,16 +1829,22 @@ function EditorSurface() {
                   : 'Use Add state or double-click empty canvas · Double-click a label to rename · Drag a handle to connect'}
           </div>
 
+          {recoveryComplete && !machineCreated && !simulating && (
+            <div className="absolute inset-0 z-20 bg-slate-100/70 backdrop-blur-[1px] dark:bg-slate-950/70" />
+          )}
+
           {recoveryComplete && graph.states.length === 0 && !simulating && (
             <div
               data-empty-state
-              className="absolute left-1/2 top-1/2 z-10 w-[min(420px,calc(100%-40px))] -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-[var(--editor-border)] bg-[var(--editor-panel)]/95 p-7 text-center shadow-2xl shadow-slate-900/10 backdrop-blur dark:shadow-black/30"
+              className="absolute left-1/2 top-1/2 z-30 w-[min(420px,calc(100%-40px))] -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-[var(--editor-border)] bg-[var(--editor-panel)]/95 p-7 text-center shadow-2xl shadow-slate-900/10 backdrop-blur dark:shadow-black/30"
             >
               <div className="mx-auto flex size-11 items-center justify-center rounded-2xl bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300">
                 <FilePlus2 className="size-5" />
               </div>
               <h2 className="mt-4 text-base font-semibold tracking-tight text-slate-900 dark:text-slate-100">
-                {machineCreated ? 'Add the initial state' : 'Create a machine'}
+                {machineCreated
+                  ? 'Add the initial state'
+                  : 'Create or open a machine'}
               </h2>
               <p className="mx-auto mt-2 max-w-xs text-sm leading-6 text-slate-500 dark:text-slate-400">
                 {machineCreated
@@ -1994,6 +2090,10 @@ function EditorSurface() {
               }}
               onReset={() => setSimulationState(graph.initial)}
             />
+          ) : !machineCreated ? (
+            <div className="flex flex-1 items-center justify-center px-8 text-center text-sm leading-6 text-slate-400 dark:text-slate-500">
+              Create or open a machine to edit its details.
+            </div>
           ) : selectedState ? (
             <StateInspector
               state={selectedState}
