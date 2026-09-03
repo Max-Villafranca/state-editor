@@ -1,4 +1,9 @@
 import type { GraphMachine } from './machine-json';
+import {
+  getEffectiveTransitions,
+  getInitialLeafState,
+  getStateChildren,
+} from './machine-hierarchy';
 
 const MAX_CYCLES = 250;
 
@@ -33,19 +38,21 @@ export type MachineAnalysis = {
 };
 
 function adjacencyFor(graph: GraphMachine) {
-  const stateKeys = new Set(graph.states.map(({ key }) => key));
+  const atomicStates = graph.states.filter(
+    ({ key }) => getStateChildren(graph, key).length === 0,
+  );
+  const stateKeys = new Set(atomicStates.map(({ key }) => key));
   const adjacency = new Map(
-    graph.states.map(({ key }) => [key, new Set<string>()]),
+    atomicStates.map(({ key }) => [key, new Set<string>()]),
   );
 
-  for (const transition of graph.transitions) {
-    if (
-      !stateKeys.has(transition.source) ||
-      !stateKeys.has(transition.target)
-    ) {
-      continue;
+  for (const state of atomicStates) {
+    for (const transition of getEffectiveTransitions(graph, state.key)) {
+      const target = getInitialLeafState(graph, transition.target);
+      if (stateKeys.has(target)) {
+        adjacency.get(state.key)?.add(target);
+      }
     }
-    adjacency.get(transition.source)?.add(transition.target);
   }
 
   return adjacency;
@@ -214,7 +221,7 @@ function analyzeCycles(
   const enumerated = enumerateSimpleCycles(reachable, adjacency, stateOrder);
   const cycles = enumerated.cycles.map((states): MachineCycle => {
     const entryPath = shortestPathToAny(
-      graph.initial,
+      getInitialLeafState(graph, graph.initial),
       new Set(states),
       adjacency,
     );
@@ -243,7 +250,8 @@ function findFinitePaths(
   graph: GraphMachine,
   adjacency: Map<string, Set<string>>,
 ) {
-  if (!adjacency.has(graph.initial)) return [];
+  const initial = getInitialLeafState(graph, graph.initial);
+  if (!adjacency.has(initial)) return [];
 
   const finalStates = new Set(
     graph.states.filter(({ final }) => final).map(({ key }) => key),
@@ -269,7 +277,7 @@ function findFinitePaths(
     }
   };
 
-  visit(graph.initial, [graph.initial], new Set([graph.initial]));
+  visit(initial, [initial], new Set([initial]));
   return paths.sort(
     (first, second) =>
       second.states.length - first.states.length ||
@@ -279,8 +287,13 @@ function findFinitePaths(
 
 function stateConnectionsFor(graph: GraphMachine) {
   return graph.states.map(({ key }) => {
-    const incoming = graph.transitions.filter(({ target }) => target === key);
-    const outgoing = graph.transitions.filter(({ source }) => source === key);
+    const atomic = getStateChildren(graph, key).length === 0;
+    const incoming = graph.transitions.filter(
+      ({ target }) => getInitialLeafState(graph, target) === key,
+    );
+    const outgoing = atomic
+      ? getEffectiveTransitions(graph, key)
+      : graph.transitions.filter(({ source }) => source === key);
     return {
       state: key,
       incomingTransitions: incoming.length,
@@ -293,7 +306,7 @@ function stateConnectionsFor(graph: GraphMachine) {
 
 export function analyzeMachine(graph: GraphMachine): MachineAnalysis {
   const adjacency = adjacencyFor(graph);
-  const reachable = reachableStates(graph.initial, adjacency);
+  const reachable = reachableStates(getInitialLeafState(graph, graph.initial), adjacency);
   const stateOrder = new Map(
     graph.states.map(({ key }, index) => [key, index]),
   );

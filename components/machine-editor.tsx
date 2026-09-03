@@ -98,6 +98,12 @@ import {
   type JsonValue,
 } from '@/lib/machine-json';
 import { analyzeMachine } from '@/lib/machine-analysis';
+import {
+  getEffectiveTransitions,
+  getInitialLeafState,
+  getReachableStateKeys as getHierarchyReachableStateKeys,
+  getStateChildren,
+} from '@/lib/machine-hierarchy';
 import { useUndoableState } from '@/lib/undo-history';
 import { createTransitionRoutes } from '@/lib/transition-routes';
 
@@ -197,6 +203,9 @@ type StateNodeData = Record<string, unknown> & {
   simulating: boolean;
   analysisHighlighted: boolean;
   analysisContextHighlighted: boolean;
+  isParent: boolean;
+  childCount: number;
+  dropTarget: boolean;
   onBeginRename: () => void;
   onCommitRename: (value: string) => void;
   onCancelRename: () => void;
@@ -271,20 +280,23 @@ function FinalStateMark() {
 }
 
 function StateNode({ data, selected }: NodeProps<StateFlowNode>) {
+  const isParent = data.isParent;
   return (
     <div
       data-analysis-highlighted={data.analysisHighlighted || undefined}
       data-analysis-context-highlighted={
         data.analysisContextHighlighted || undefined
       }
-      className={`min-w-48 rounded-2xl border bg-[var(--editor-panel)] px-4 py-3 shadow-[var(--editor-node-shadow)] transition-all ${
+      className={`${isParent ? 'h-full w-full rounded-xl border-2 border-dashed px-4 py-3' : 'min-w-48 rounded-2xl border px-4 py-3'} bg-[var(--editor-panel)] shadow-[var(--editor-node-shadow)] transition-all ${
         data.current
           ? 'border-amber-400 ring-4 ring-amber-300/30 shadow-[0_10px_36px_rgb(245_158_11/18%)] dark:ring-amber-400/20'
+          : data.dropTarget
+            ? 'border-violet-500 ring-4 ring-violet-400/35 shadow-[0_10px_36px_rgb(124_58_237/22%)] dark:border-violet-300 dark:ring-violet-300/30'
           : data.analysisHighlighted
             ? 'border-[var(--editor-analysis)] ring-4 ring-rose-500/15 shadow-[0_10px_32px_rgb(225_29_72/16%)] dark:ring-rose-400/20'
             : data.analysisContextHighlighted
               ? 'border-[var(--editor-analysis-context)] ring-2 ring-amber-400/10 dark:ring-amber-300/15'
-              : selected
+                : selected
                 ? 'border-violet-500 ring-4 ring-violet-500/10 dark:border-violet-400 dark:ring-violet-400/20'
                 : data.unreachable
                   ? 'border-orange-300 dark:border-orange-500'
@@ -341,7 +353,9 @@ function StateNode({ data, selected }: NodeProps<StateFlowNode>) {
                 ? 'Final state'
                 : data.initial
                   ? 'Initial state'
-                  : 'State'}
+              : isParent
+                ? `Parent state · ${data.childCount} ${data.childCount === 1 ? 'child' : 'children'}`
+                : 'State'}
         </span>
         {data.unreachable ? (
           <TriangleAlert className="size-3.5 text-orange-500 dark:text-orange-400" />
@@ -387,24 +401,6 @@ function errorMessages(error: unknown) {
   return ['Something went wrong.'];
 }
 
-function getReachableStateKeys(graph: GraphMachine) {
-  const reachable = new Set<string>();
-  if (!graph.initial) return reachable;
-
-  const queue = [graph.initial];
-  while (queue.length > 0) {
-    const key = queue.shift()!;
-    if (reachable.has(key)) continue;
-    reachable.add(key);
-    for (const transition of graph.transitions) {
-      if (transition.source === key && !reachable.has(transition.target)) {
-        queue.push(transition.target);
-      }
-    }
-  }
-  return reachable;
-}
-
 function machineContentHash(graph: GraphMachine) {
   return JSON.stringify({
     id: graph.id.trim(),
@@ -414,6 +410,9 @@ function machineContentHash(graph: GraphMachine) {
     meta: graph.meta,
     states: graph.states.map((state) => ({
       key: state.key,
+      stateId: state.stateId,
+      parentKey: state.parentKey,
+      initialChild: state.initialChild,
       final: state.final,
       description: state.description.trim(),
       tags: [...new Set(state.tags)],
@@ -679,6 +678,7 @@ function EditorSurface() {
   const [nodeRuntimeById, setNodeRuntimeById] = useState<
     Map<string, StateFlowNodeRuntime>
   >(() => new Map());
+  const pendingNodeDeletionEdgeIds = useRef<Set<string>>(new Set());
   const [renamingState, setRenamingState] = useState<string | null>(null);
   const [pendingConnection, setPendingConnection] = useState<Connection | null>(
     null,
@@ -712,11 +712,16 @@ function EditorSurface() {
   const [createDialogError, setCreateDialogError] = useState<string | null>(
     null,
   );
+  const [groupDialogOpen, setGroupDialogOpen] = useState(false);
+  const [groupName, setGroupName] = useState('');
+  const [groupInitialChild, setGroupInitialChild] = useState('');
+  const [groupDialogError, setGroupDialogError] = useState<string | null>(null);
+  const [dropTargetParentKey, setDropTargetParentKey] = useState<string | null>(null);
   const simulating = simulationState !== null;
   const machineCreated = graph.id.trim().length > 0;
   const machineReady = machineCreated && graph.states.length > 0;
   const reachableStateKeys = useMemo(
-    () => getReachableStateKeys(graph),
+    () => getHierarchyReachableStateKeys(graph),
     [graph],
   );
   const actionNameSuggestions = useMemo(
@@ -946,7 +951,13 @@ function EditorSurface() {
         ...current,
         initial: current.initial === oldKey ? nextKey : current.initial,
         states: current.states.map((state) =>
-          state.key === oldKey ? { ...state, key: nextKey } : state,
+          state.key === oldKey
+            ? { ...state, key: nextKey }
+            : {
+                ...state,
+                parentKey: state.parentKey === oldKey ? nextKey : state.parentKey,
+                initialChild: state.initialChild === oldKey ? nextKey : state.initialChild,
+              },
         ),
         transitions: current.transitions.map((transition) => ({
           ...transition,
@@ -958,7 +969,7 @@ function EditorSurface() {
       setRenamingState(null);
       clearFeedback('State renamed');
     },
-    [clearFeedback, graph.states, selectEditorItem, setGraph, showIssues],
+    [clearFeedback, graph, selectEditorItem, setGraph, showIssues],
   );
 
   const analysisHighlightedStateKeys = useMemo(
@@ -982,11 +993,24 @@ function EditorSurface() {
     () =>
       graph.states.map((state) => {
         const runtime = nodeRuntimeById.get(state.key);
+        const children = getStateChildren(graph, state.key);
+        const isParent = children.length > 0;
+        const frameWidth = isParent
+          ? Math.max(560, ...children.map((child) => child.position.x + 240))
+          : undefined;
+        const frameHeight = isParent
+          ? Math.max(340, ...children.map((child) => child.position.y + 140))
+          : undefined;
         return {
           ...runtime,
           id: state.key,
           type: 'state',
           position: state.position,
+          ...(state.parentKey
+            ? { parentId: state.parentKey, extent: 'parent' as const }
+            : {}),
+          ...(isParent ? { style: { width: frameWidth, height: frameHeight } } : {}),
+          zIndex: isParent ? 0 : 10,
           selected: selectedStateKeys.has(state.key),
           draggable: !simulating,
           deletable: !simulating,
@@ -1000,6 +1024,9 @@ function EditorSurface() {
             simulating,
             analysisHighlighted: analysisHighlightedStateKeys.has(state.key),
             analysisContextHighlighted: analysisContextStateKeys.has(state.key),
+            isParent,
+            childCount: children.length,
+            dropTarget: dropTargetParentKey === state.key,
             onBeginRename: () => !simulating && setRenamingState(state.key),
             onCommitRename: (value: string) => renameState(state.key, value),
             onCancelRename: () => setRenamingState(null),
@@ -1007,8 +1034,7 @@ function EditorSurface() {
         };
       }),
     [
-      graph.initial,
-      graph.states,
+      graph,
       analysisHighlightedStateKeys,
       analysisContextStateKeys,
       nodeRuntimeById,
@@ -1018,6 +1044,7 @@ function EditorSurface() {
       selectedStateKeys,
       simulating,
       simulationState,
+      dropTargetParentKey,
     ],
   );
 
@@ -1056,12 +1083,12 @@ function EditorSurface() {
         deletable: true,
         selectable: true,
         zIndex: analysisHighlighted
-          ? 3
+          ? 7
           : analysisContextHighlighted
-            ? 2
+            ? 6
             : selected
-              ? 1
-              : 0,
+              ? 5
+              : 4,
         data: {
           sourceLabel: route.source,
           targetLabel: route.target,
@@ -1114,23 +1141,44 @@ function EditorSurface() {
   const removeStates = useCallback(
     (keys: string[]) => {
       if (simulating || keys.length === 0) return;
-      const keySet = new Set(keys);
-      const remaining = graph.states.filter((state) => !keySet.has(state.key));
+      const keySet = new Set(
+        keys.filter((key) => {
+          let parentKey = graph.states.find((state) => state.key === key)?.parentKey;
+          while (parentKey) {
+            if (keys.includes(parentKey)) return false;
+            parentKey = graph.states.find((state) => state.key === parentKey)?.parentKey;
+          }
+          return true;
+        }),
+      );
+      const parentStates = graph.states.filter((state) => keySet.has(state.key) && getStateChildren(graph, state.key).length > 0);
+      const ungroupedChildren = graph.states
+        .filter((state) => state.parentKey && keySet.has(state.parentKey))
+        .map((state) => {
+          const parent = graph.states.find((candidate) => candidate.key === state.parentKey);
+          return parent
+            ? { ...state, parentKey: undefined, position: { x: state.position.x + parent.position.x, y: state.position.y + parent.position.y } }
+            : { ...state, parentKey: undefined };
+        });
+      const remaining = graph.states
+        .filter((state) => !keySet.has(state.key) && !(state.parentKey && keySet.has(state.parentKey)))
+        .map((state) => state);
+      const nextStates = [...remaining, ...ungroupedChildren];
       setGraph((current) => ({
         ...current,
         initial: keySet.has(current.initial)
-          ? (remaining[0]?.key ?? '')
+          ? (ungroupedChildren[0]?.key ?? remaining.find((state) => state.parentKey === undefined)?.key ?? '')
           : current.initial,
-        states: current.states.filter((state) => !keySet.has(state.key)),
+        states: nextStates,
         transitions: current.transitions.filter(
           (transition) =>
             !keySet.has(transition.source) && !keySet.has(transition.target),
         ),
       }));
       selectEditorItem({ kind: 'machine', id: 'machine' });
-      clearFeedback(keys.length === 1 ? 'State deleted' : 'States deleted');
+      clearFeedback(parentStates.length ? 'Parent state removed; children kept' : keys.length === 1 ? 'State deleted' : 'States deleted');
     },
-    [clearFeedback, graph.states, selectEditorItem, setGraph, simulating],
+    [clearFeedback, graph, selectEditorItem, setGraph, simulating],
   );
 
   const onNodesChange = useCallback(
@@ -1225,6 +1273,10 @@ function EditorSurface() {
       const removed: string[] = [];
       for (const change of changes) {
         if (change.type !== 'remove') continue;
+        if (pendingNodeDeletionEdgeIds.current.has(change.id)) {
+          pendingNodeDeletionEdgeIds.current.delete(change.id);
+          continue;
+        }
         const route = edges.find((edge) => edge.id === change.id);
         const routeTransitions = route?.data?.transitions ?? [];
         const selectedId =
@@ -1327,6 +1379,10 @@ function EditorSurface() {
   const toggleFinal = (key: string) => {
     const state = graph.states.find((candidate) => candidate.key === key);
     if (!state) return;
+    if (!state.final && getStateChildren(graph, key).length > 0) {
+      showIssues(['Parent states cannot be final. Mark a child state final instead.']);
+      return;
+    }
     if (
       !state.final &&
       graph.transitions.some((transition) => transition.source === key)
@@ -1360,9 +1416,39 @@ function EditorSurface() {
     }));
   };
 
+  const removeFromParent = useCallback(
+    (key: string) => {
+      const child = graph.states.find((state) => state.key === key);
+      if (!child?.parentKey || simulating) return;
+      const parent = graph.states.find((state) => state.key === child.parentKey);
+      if (!parent) return;
+      setGraph((current) => ({
+        ...current,
+        states: current.states.map((state) =>
+          state.key === key
+            ? {
+                ...state,
+                parentKey: undefined,
+                position: {
+                  x: state.position.x + parent.position.x,
+                  y: state.position.y + parent.position.y,
+                },
+              }
+            : state,
+        ),
+      }));
+      clearFeedback(`${key} removed from ${parent.key}`);
+    },
+    [clearFeedback, graph.states, setGraph, simulating],
+  );
+
   const duplicateState = (key: string) => {
     const source = graph.states.find((state) => state.key === key);
     if (!source || simulating) return;
+    if (getStateChildren(graph, key).length > 0) {
+      showIssues(['Duplicate the child states individually before creating another parent.']);
+      return;
+    }
 
     const baseKey = `${source.key}Copy`;
     let nextKey = baseKey;
@@ -1379,6 +1465,7 @@ function EditorSurface() {
     const duplicate: GraphState = {
       ...structuredClone(source),
       key: nextKey,
+      ...(source.stateId ? { stateId: nextKey } : {}),
       position: {
         x: source.position.x + 48,
         y: source.position.y + 48,
@@ -1464,6 +1551,78 @@ function EditorSurface() {
     setCreateDialogError(null);
     setCreateDialogOpen(true);
   }, []);
+
+  const openGroupDialog = useCallback(() => {
+    const candidates = [...selectedStateKeys]
+      .map((key) => graph.states.find((state) => state.key === key))
+      .filter((state): state is GraphState => Boolean(state));
+    setGroupName('');
+    setGroupInitialChild(candidates[0]?.key ?? '');
+    setGroupDialogError(null);
+    setGroupDialogOpen(true);
+  }, [graph.states, selectedStateKeys]);
+
+  const groupSelectedStates = (event: React.SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const name = groupName.trim();
+    const selected = graph.states.filter((state) => selectedStateKeys.has(state.key));
+    if (!name) {
+      setGroupDialogError('Give the parent state a name.');
+      return;
+    }
+    if (graph.states.some((state) => state.key === name)) {
+      setGroupDialogError(`A state named ${name} already exists.`);
+      return;
+    }
+    if (selected.length < 2) {
+      setGroupDialogError('Select at least two top-level states to group.');
+      return;
+    }
+    if (selected.some((state) => state.parentKey !== undefined || getStateChildren(graph, state.key).length > 0)) {
+      setGroupDialogError('Only top-level leaf states can be grouped right now.');
+      return;
+    }
+    if (!selected.some((state) => state.key === groupInitialChild)) {
+      setGroupDialogError('Choose one of the selected states as the initial child.');
+      return;
+    }
+    const minX = Math.min(...selected.map((state) => state.position.x));
+    const minY = Math.min(...selected.map((state) => state.position.y));
+    const parentPosition = { x: minX - 32, y: minY - 64 };
+    const childKeys = new Set(selected.map((state) => state.key));
+    const nextStates = graph.states.map((state) =>
+      childKeys.has(state.key)
+        ? {
+            ...state,
+            parentKey: name,
+            position: {
+              x: state.position.x - parentPosition.x,
+              y: state.position.y - parentPosition.y,
+            },
+          }
+        : state,
+    );
+    const parent: GraphState = {
+      key: name,
+      initialChild: groupInitialChild,
+      position: parentPosition,
+      final: false,
+      description: '',
+      tags: [],
+      entryActions: [],
+      exitActions: [],
+    };
+    const firstIndex = Math.min(...graph.states.map((state, index) => (childKeys.has(state.key) ? index : Number.POSITIVE_INFINITY)));
+    nextStates.splice(firstIndex, 0, parent);
+    setGraph((current) => ({
+      ...current,
+      initial: childKeys.has(current.initial) ? name : current.initial,
+      states: nextStates,
+    }));
+    setGroupDialogOpen(false);
+    selectEditorItem({ kind: 'state', id: name });
+    clearFeedback(`Grouped ${selected.length} states under ${name}`);
+  };
 
   const requestNewMachine = () => {
     const hasUnsavedWork =
@@ -1692,8 +1851,9 @@ function EditorSurface() {
       showIssues(validationIssues);
       return;
     }
-    setSimulationState(graph.initial);
-    selectEditorItem({ kind: 'state', id: graph.initial });
+    const initialLeaf = getInitialLeafState(graph, graph.initial);
+    setSimulationState(initialLeaf);
+    selectEditorItem({ kind: 'state', id: initialLeaf });
     clearFeedback('Simulation running');
   };
 
@@ -1733,8 +1893,23 @@ function EditorSurface() {
   const currentState = graph.states.find(
     (state) => state.key === simulationState,
   );
-  const availableTransitions = graph.transitions.filter(
-    (transition) => transition.source === simulationState,
+  const availableTransitions = simulationState
+    ? getEffectiveTransitions(graph, simulationState)
+    : [];
+  const routeKeyFor = useCallback(
+    (source: string, target: string) => {
+      const direct = graph.transitions.find(
+        (transition) => transition.source === source && transition.target === target,
+      );
+      const inherited = getEffectiveTransitions(graph, source).find(
+        (transition) => getInitialLeafState(graph, transition.target) === target,
+      );
+      const transition = direct ?? inherited;
+      return transition
+        ? `${transition.source}\u0000${transition.target}`
+        : `${source}\u0000${target}`;
+    },
+    [graph],
   );
 
   return (
@@ -1805,6 +1980,17 @@ function EditorSurface() {
                   {machineCreated ? 'New' : 'Create'}
                 </span>
               </Button>
+              {selectedStateKeys.size >= 2 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={openGroupDialog}
+                  title="Group selected states into a compound parent"
+                >
+                  <CopyPlus />
+                  <span className="hidden xl:inline">Group</span>
+                </Button>
+              )}
               <div className="flex items-center rounded-lg border border-[var(--editor-border)] bg-[var(--editor-panel-subtle)] p-0.5">
                 <Button
                   variant="ghost"
@@ -1888,7 +2074,7 @@ function EditorSurface() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setSimulationState(graph.initial)}
+                onClick={() => setSimulationState(getInitialLeafState(graph, graph.initial))}
               >
                 <RotateCcw />
                 Reset
@@ -1980,8 +2166,67 @@ function EditorSurface() {
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
             onNodesChange={onNodesChange}
+            onBeforeDelete={async ({ nodes: nodesToDelete, edges: edgesToDelete }) => {
+              if (nodesToDelete.length > 0) {
+                pendingNodeDeletionEdgeIds.current = new Set(
+                  edgesToDelete.map((edge) => edge.id),
+                );
+              }
+              const rootNodes = nodesToDelete.filter((node) => !node.parentId);
+              const rootIds = new Set(rootNodes.map((node) => node.id));
+              const includesParent = rootNodes.some(
+                (node) => getStateChildren(graph, node.id).length > 0,
+              );
+              if (!includesParent) {
+                return { nodes: nodesToDelete, edges: edgesToDelete };
+              }
+              return {
+                nodes: rootNodes,
+                edges: edgesToDelete.filter(
+                  (edge) => rootIds.has(edge.source) || rootIds.has(edge.target),
+                ),
+              };
+            }}
             onNodeDragStart={beginGraphTransaction}
-            onNodeDragStop={commitGraphTransaction}
+            onNodeDrag={(_, node) => {
+              if (simulating || node.parentId) {
+                setDropTargetParentKey(null);
+                return;
+              }
+              const parent = flow
+                .getIntersectingNodes(node, true)
+                .find((candidate) => getStateChildren(graph, candidate.id).length > 0);
+              setDropTargetParentKey(parent?.id ?? null);
+            }}
+            onNodeDragStop={(_, node) => {
+              setDropTargetParentKey(null);
+              if (simulating || node.parentId) {
+                commitGraphTransaction();
+                return;
+              }
+              const parent = flow
+                .getIntersectingNodes(node, true)
+                .find((candidate) => getStateChildren(graph, candidate.id).length > 0);
+              if (parent && parent.id !== node.id) {
+                setGraph((current) => ({
+                  ...current,
+                  states: current.states.map((state) =>
+                    state.key === node.id
+                      ? {
+                          ...state,
+                          parentKey: parent.id,
+                          position: {
+                            x: node.position.x - parent.position.x,
+                            y: node.position.y - parent.position.y,
+                          },
+                        }
+                      : state,
+                  ),
+                }));
+                clearFeedback(`Added ${node.id} to ${parent.id}`);
+              }
+              commitGraphTransaction();
+            }}
             onEdgesChange={onEdgesChange}
             onEdgeClick={(_, edge) => {
               const transitionIds =
@@ -2039,6 +2284,8 @@ function EditorSurface() {
             nodesDraggable={!simulating}
             nodesConnectable={!simulating}
             elementsSelectable
+            elevateNodesOnSelect={false}
+            zIndexMode="manual"
             elevateEdgesOnSelect={false}
             selectionOnDrag
             selectionMode={SelectionMode.Partial}
@@ -2204,10 +2451,11 @@ function EditorSurface() {
               currentState={currentState}
               transitions={availableTransitions}
               onTransition={(transition) => {
-                setSimulationState(transition.target);
-                selectEditorItem({ kind: 'state', id: transition.target });
+                const targetLeaf = getInitialLeafState(graph, transition.target);
+                setSimulationState(targetLeaf);
+                selectEditorItem({ kind: 'state', id: targetLeaf });
               }}
-              onReset={() => setSimulationState(graph.initial)}
+              onReset={() => setSimulationState(getInitialLeafState(graph, graph.initial))}
             />
           ) : !machineCreated ? (
             <div className="flex flex-1 items-center justify-center px-8 text-center text-sm leading-6 text-slate-400 dark:text-slate-500">
@@ -2281,12 +2529,9 @@ function EditorSurface() {
                       kind: 'path',
                       key,
                       states: path.states,
-                      routes: path.states
-                        .slice(1)
-                        .map(
-                          (target, index) =>
-                            `${path.states[index]}\u0000${target}`,
-                        ),
+                      routes: path.states.slice(1).map((target, index) =>
+                        routeKeyFor(path.states[index], target),
+                      ),
                     });
                     const pathStates = new Set(path.states);
                     const pathNodes = nodes.filter(({ id }) =>
@@ -2312,27 +2557,25 @@ function EditorSurface() {
                       return;
                     }
                     selectEditorItem({ kind: 'machine', id: 'machine' });
-                    const relatedTransitions = graph.transitions.filter(
-                      (transition) =>
-                        stateDirection === 'incoming'
-                          ? transition.target === state
-                          : transition.source === state,
-                    );
+                    const relatedTransitions =
+                      stateDirection === 'incoming'
+                        ? graph.transitions.filter((transition) => transition.target === state)
+                        : getEffectiveTransitions(graph, state);
                     setAnalysisHighlight({
                       kind: 'node',
                       key: state,
                       states: [state],
-                      routes: relatedTransitions.map(
-                        (transition) =>
-                          `${transition.source}\u0000${transition.target}`,
+                      routes: relatedTransitions.map((transition) =>
+                        routeKeyFor(transition.source, transition.target),
                       ),
                     });
                     const framedStates = new Set([
                       state,
-                      ...relatedTransitions.flatMap((transition) => [
-                        transition.source,
-                        transition.target,
-                      ]),
+                        ...relatedTransitions.flatMap((transition) => [
+                          transition.source,
+                          transition.target,
+                          getInitialLeafState(graph, transition.target),
+                        ]),
                     ]);
                     const framedNodes = nodes.filter(({ id }) =>
                       framedStates.has(id),
@@ -2358,16 +2601,15 @@ function EditorSurface() {
                     }
                     selectEditorItem({ kind: 'machine', id: 'machine' });
                     const cycleStates = new Set(cycle.states);
-                    const cycleRoutes = cycle.states.map(
-                      (source, index) =>
-                        `${source}\u0000${cycle.states[(index + 1) % cycle.states.length]}`,
+                    const cycleRoutes = cycle.states.map((source, index) =>
+                      routeKeyFor(source, cycle.states[(index + 1) % cycle.states.length]),
                     );
                     const routesForPath = (path: string[] | null) => {
                       if (!path) return [];
                       return path
                         .slice(1)
                         .map(
-                          (target, index) => `${path[index]}\u0000${target}`,
+                          (target, index) => routeKeyFor(path[index], target),
                         );
                     };
                     const contextStates = [
@@ -2419,6 +2661,7 @@ function EditorSurface() {
                   onToggleFinal={() => toggleFinal(selectedState.key)}
                   onDuplicate={() => duplicateState(selectedState.key)}
                   onDelete={() => removeStates([selectedState.key])}
+                  onRemoveFromParent={() => removeFromParent(selectedState.key)}
                   onUpdate={(patch) => updateState(selectedState.key, patch)}
                   onError={(message) => showIssues([message])}
                   actionNameSuggestions={actionNameSuggestions}
@@ -2545,6 +2788,57 @@ function EditorSurface() {
           </DialogContent>
         </Dialog>
       )}
+      {groupDialogOpen && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            setGroupDialogOpen(open);
+            if (!open) setGroupDialogError(null);
+          }}
+        >
+          <DialogContent className="sm:max-w-md">
+            <form onSubmit={groupSelectedStates} className="grid gap-5">
+              <DialogHeader>
+                <DialogTitle>Group states</DialogTitle>
+                <DialogDescription>
+                  Create a compound parent state. The selected states stay as editable children inside it.
+                </DialogDescription>
+              </DialogHeader>
+              <label htmlFor="group-state-name" className="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
+                Parent state name
+                <Input
+                  id="group-state-name"
+                  value={groupName}
+                  onChange={(event) => {
+                    setGroupName(event.target.value);
+                    setGroupDialogError(null);
+                  }}
+                  placeholder="stateGroup"
+                  aria-invalid={groupDialogError ? true : undefined}
+                />
+              </label>
+              <label htmlFor="group-initial-child" className="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
+                Initial child
+                <select
+                  id="group-initial-child"
+                  value={groupInitialChild}
+                  onChange={(event) => setGroupInitialChild(event.target.value)}
+                  className="h-10 rounded-md border border-[var(--editor-border)] bg-[var(--editor-panel)] px-3 text-sm text-slate-800 dark:text-slate-100"
+                >
+                  {graph.states.filter((state) => selectedStateKeys.has(state.key)).map((state) => (
+                    <option key={state.key} value={state.key}>{state.key}</option>
+                  ))}
+                </select>
+              </label>
+              {groupDialogError && <p className="text-sm text-rose-700 dark:text-rose-300" role="alert">{groupDialogError}</p>}
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setGroupDialogOpen(false)}>Cancel</Button>
+                <Button type="submit" className="bg-violet-600 hover:bg-violet-700"><CopyPlus /> Group states</Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
     </main>
   );
 }
@@ -2637,6 +2931,7 @@ function StateInspector({
   onToggleFinal,
   onDuplicate,
   onDelete,
+  onRemoveFromParent,
   onUpdate,
   onError,
   actionNameSuggestions,
@@ -2653,6 +2948,7 @@ function StateInspector({
   onToggleFinal: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  onRemoveFromParent: () => void;
   onUpdate: (patch: Partial<GraphState>) => void;
   onError: (message: string) => void;
   actionNameSuggestions: string[];
@@ -2762,6 +3058,16 @@ function StateInspector({
           />
         </div>
         <div className="border-t border-[var(--editor-border)] pt-4">
+          {state.parentKey && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onRemoveFromParent}
+              className="mb-2 w-full"
+            >
+              Remove from parent
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"

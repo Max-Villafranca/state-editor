@@ -6,7 +6,7 @@ A lightweight, local-first visual editor for small XState v6 state machines. It 
 
 ## What it supports
 
-- Flat state machines with one initial state and multiple final states
+- Flat state machines plus compound parent states with an initial child
 - Event-driven transitions
 - Entry, exit, and transition actions with optional JSON parameters
 - State and machine descriptions, tags, and metadata
@@ -17,7 +17,7 @@ A lightweight, local-first visual editor for small XState v6 state machines. It 
 - Project files that retain editor layout (`.se.json`)
 - Clean XState MachineJSON exports (`.json`)
 
-The editor intentionally omits nested and parallel states, guards, actors, delayed transitions, eventless transitions, and executable inline code.
+The editor intentionally omits parallel states, guards, actors, delayed transitions, eventless transitions, and executable inline code. Parent states are the supported form of nesting: child transitions are edited in place, parent transitions are inherited by active children, and cross-boundary targets export with stable XState ids.
 
 ## Run locally
 

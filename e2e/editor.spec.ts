@@ -763,6 +763,97 @@ test('double-clicking empty canvas creates a state without zooming', async ({
   await expect.poll(() => viewportTransform(viewport)).toBe(transformBefore);
 });
 
+test('deleting a parent keeps child transitions and uses one undo step', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const writes: string[] = [];
+    Object.defineProperty(window, '__parentExportWrites', { value: writes });
+    Object.defineProperty(window, 'showSaveFilePicker', {
+      configurable: true,
+      value: async () => ({
+        name: 'parentDemo.json',
+        createWritable: async () => ({
+          write: async (contents: string) => writes.push(contents),
+          close: async () => undefined,
+        }),
+      }),
+    });
+  });
+  await page.goto('/');
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'parentDemo.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        id: 'parentDemo',
+        initial: 'contacting',
+        states: {
+          contacting: {
+            initial: 'calling',
+            states: {
+              calling: { on: { VOICEMAIL: { target: 'voicemail' } } },
+              voicemail: {},
+            },
+          },
+          done: { type: 'final' },
+        },
+      }),
+    ),
+  });
+  await expect(page.getByRole('button', { name: 'contacting', exact: true })).toBeVisible();
+  const newState = page.locator('.react-flow__node[data-id="done"]');
+  const parentFrame = page.locator('.react-flow__node[data-id="contacting"]');
+  const newStateBox = await requiredBox(newState);
+  const parentFrameBox = await requiredBox(parentFrame);
+  await dragPointer(
+    page,
+    centerOf(newStateBox),
+    { x: parentFrameBox.x + parentFrameBox.width - 80, y: parentFrameBox.y + parentFrameBox.height - 60 },
+  );
+  await page.getByRole('button', { name: 'Export JSON' }).click();
+  const groupedExport = await page.evaluate(() =>
+    JSON.parse(
+      (window as unknown as { __parentExportWrites: string[] }).__parentExportWrites.at(-1) ??
+        'null',
+    ),
+  );
+  expect(groupedExport.states.contacting.states.done).toEqual({ id: 'done', type: 'final' });
+  const stacking = await page.evaluate(() => {
+    const parent = document.querySelector<HTMLElement>('.react-flow__node[data-id="contacting"]');
+    const child = document.querySelector<HTMLElement>('.react-flow__node[data-id="calling"]');
+    const edge = document.querySelector<HTMLElement>('.react-flow__edge');
+    const zIndex = (element: HTMLElement | null) => {
+      const parsed = Number.parseInt(getComputedStyle(element!).zIndex, 10);
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+    return {
+      parent: zIndex(parent),
+      edge: zIndex(edge?.parentElement as HTMLElement | null),
+      child: zIndex(child),
+    };
+  });
+  expect(stacking.edge).toBeGreaterThan(stacking.parent);
+  expect(stacking.child).toBeGreaterThan(stacking.edge);
+  await page.getByRole('button', { name: 'contacting', exact: true }).click();
+  await page.keyboard.press('Delete');
+  await expect(page.getByRole('button', { name: 'contacting', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'calling', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'voicemail', exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Export JSON' }).click();
+  const exported = await page.evaluate(() =>
+    JSON.parse(
+      (window as unknown as { __parentExportWrites: string[] }).__parentExportWrites.at(-1) ??
+        'null',
+    ),
+  );
+  expect(exported.states.calling.on.VOICEMAIL.target).toBe('voicemail');
+
+  await page.getByRole('button', { name: 'Undo' }).click();
+  await expect(page.getByRole('button', { name: 'contacting', exact: true })).toBeVisible();
+});
+
 async function pickerState(page: import('@playwright/test').Page) {
   return page.evaluate(() => {
     const calls = (

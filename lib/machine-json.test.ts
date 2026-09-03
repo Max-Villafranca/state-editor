@@ -50,6 +50,55 @@ const definition: MachineJSON = {
 };
 
 describe('MachineJSON conversion', () => {
+  it('round-trips compound parent states and cross-boundary targets', () => {
+    const nested: MachineJSON = {
+      id: 'contactFlow',
+      initial: 'contacting',
+      states: {
+        contacting: {
+          initial: 'calling',
+          states: {
+            calling: { on: { VOICEMAIL: { target: 'voicemail' } } },
+            voicemail: {},
+          },
+          on: { INTERESTED: { target: '#interested' } },
+        },
+        interested: { id: 'interested' },
+      },
+    };
+
+    const graph = machineJSONToGraph(nested);
+    expect(graph.states).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'contacting', initialChild: 'calling' }),
+        expect.objectContaining({ key: 'calling', parentKey: 'contacting' }),
+        expect.objectContaining({ key: 'voicemail', parentKey: 'contacting' }),
+      ]),
+    );
+    expect(graph.initial).toBe('contacting');
+    expect(graph.transitions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: 'contacting', target: 'interested', event: 'INTERESTED' }),
+      ]),
+    );
+    expect(graphToMachineJSON(graph)).toEqual({
+      id: 'contactFlow',
+      initial: 'contacting',
+      states: {
+        contacting: {
+          id: 'contacting',
+          initial: 'calling',
+          states: {
+            calling: { id: 'calling', on: { VOICEMAIL: { target: 'voicemail' } } },
+            voicemail: { id: 'voicemail' },
+          },
+          on: { INTERESTED: { target: '#interested' } },
+        },
+        interested: { id: 'interested' },
+      },
+    });
+  });
+
   it('round-trips the supported machine semantics', () => {
     const graph = machineJSONToGraph(definition);
     expect(graphToMachineJSON(graph)).toEqual(definition);

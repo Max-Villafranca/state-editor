@@ -17,6 +17,9 @@ export type MachineTransitionJSON = {
 };
 
 export type MachineStateJSON = {
+  id?: string;
+  initial?: string;
+  states?: Record<string, MachineStateJSON>;
   type?: 'final';
   description?: string;
   tags?: string[];
@@ -37,6 +40,9 @@ export type MachineJSON = {
 
 export type GraphState = {
   key: string;
+  stateId?: string;
+  parentKey?: string;
+  initialChild?: string;
   position: { x: number; y: number };
   final: boolean;
   description: string;
@@ -106,6 +112,9 @@ const ROOT_KEYS = new Set([
   'meta',
 ]);
 const STATE_KEYS = new Set([
+  'id',
+  'initial',
+  'states',
   'type',
   'on',
   'description',
@@ -281,8 +290,66 @@ export function validateGraph(graph: GraphMachine): string[] {
   if (keySet.size !== keys.length) issues.push('State keys must be unique.');
   if (keys.some((key) => key.trim().length === 0))
     issues.push('State keys cannot be empty.');
-  if (!graph.initial || !keySet.has(graph.initial)) {
+  const stateByKey = new Map(graph.states.map((state) => [state.key, state]));
+  const stateIds = new Set<string>();
+  const childrenByParent = new Map<string | undefined, GraphState[]>();
+  for (const state of graph.states) {
+    if (state.stateId !== undefined) {
+      if (!state.stateId.trim()) issues.push(`State ${state.key} id cannot be empty.`);
+      if (stateIds.has(state.stateId)) issues.push(`State id ${state.stateId} must be unique.`);
+      stateIds.add(state.stateId);
+    }
+    const children = childrenByParent.get(state.parentKey) ?? [];
+    children.push(state);
+    childrenByParent.set(state.parentKey, children);
+  }
+
+  if (
+    !graph.initial ||
+    !keySet.has(graph.initial) ||
+    stateByKey.get(graph.initial)?.parentKey !== undefined
+  ) {
     issues.push('Choose exactly one existing top-level state as initial.');
+  }
+
+  for (const state of graph.states) {
+    if (state.parentKey !== undefined) {
+      const parent = stateByKey.get(state.parentKey);
+      if (!parent) {
+        issues.push(
+          `State ${state.key} refers to missing parent ${state.parentKey}.`,
+        );
+      } else if (parent.final) {
+        issues.push(`Final state ${parent.key} cannot contain child states.`);
+      }
+
+      const seenParents = new Set<string>([state.key]);
+      let currentParent: string | undefined = state.parentKey;
+      while (currentParent !== undefined) {
+        if (seenParents.has(currentParent)) {
+          issues.push(`State ${state.key} cannot be its own ancestor.`);
+          break;
+        }
+        seenParents.add(currentParent);
+        currentParent = stateByKey.get(currentParent)?.parentKey;
+      }
+    }
+
+    const children = childrenByParent.get(state.key) ?? [];
+    if (children.length > 0) {
+      if (state.final) {
+        issues.push(`Final state ${state.key} cannot contain child states.`);
+      }
+      if (!state.initialChild) {
+        issues.push(`Parent state ${state.key} needs an initial child.`);
+      } else if (!children.some((child) => child.key === state.initialChild)) {
+        issues.push(
+          `Parent state ${state.key} initial child ${state.initialChild} does not exist.`,
+        );
+      }
+    } else if (state.initialChild !== undefined) {
+      issues.push(`State ${state.key} cannot declare an initial child.`);
+    }
   }
 
   const sourceEvents = new Set<string>();
@@ -363,38 +430,68 @@ export function graphToMachineJSON(graph: GraphMachine): MachineJSON {
   if (graph.tags.length) machine.tags = [...new Set(graph.tags)];
   if (graph.meta !== undefined) machine.meta = graph.meta;
 
+  const hasHierarchy = graph.states.some(
+    (state) => state.parentKey !== undefined || state.initialChild !== undefined,
+  );
+  const stateByKey = new Map(graph.states.map((state) => [state.key, state]));
+  const childrenByParent = new Map<string | undefined, GraphState[]>();
   for (const state of graph.states) {
+    const children = childrenByParent.get(state.parentKey) ?? [];
+    children.push(state);
+    childrenByParent.set(state.parentKey, children);
+  }
+
+  const serializeState = (state: GraphState): MachineStateJSON => {
     const stateJson: MachineStateJSON = {};
+    if (state.stateId) stateJson.id = state.stateId;
+    else if (hasHierarchy) stateJson.id = state.key;
     if (state.final) stateJson.type = 'final';
-    if (state.description.trim())
-      stateJson.description = state.description.trim();
+    if (state.description.trim()) stateJson.description = state.description.trim();
     if (state.tags.length) stateJson.tags = [...new Set(state.tags)];
     if (state.meta !== undefined) stateJson.meta = state.meta;
-    if (state.entryActions.length)
-      stateJson.entry = serializeActions(state.entryActions);
-    if (state.exitActions.length)
-      stateJson.exit = serializeActions(state.exitActions);
+    if (state.entryActions.length) stateJson.entry = serializeActions(state.entryActions);
+    if (state.exitActions.length) stateJson.exit = serializeActions(state.exitActions);
 
-    const outgoing = graph.transitions.filter(
-      (transition) => transition.source === state.key,
-    );
-    if (outgoing.length) {
-      stateJson.on = Object.fromEntries(
-        outgoing.map((transition) => [
-          transition.event,
-          {
-            target: transition.target,
-            ...(transition.actions.length
-              ? {
-                  actions: serializeActions(transition.actions),
-                }
-              : {}),
-          },
-        ]),
+    const children = childrenByParent.get(state.key) ?? [];
+    if (children.length) {
+      stateJson.initial = state.initialChild as string;
+      stateJson.states = Object.fromEntries(
+        children.map((child) => [child.key, serializeState(child)]),
       );
     }
-    machine.states[state.key] = stateJson;
+
+    const outgoing = graph.transitions.filter((transition) => transition.source === state.key);
+    if (outgoing.length) {
+      stateJson.on = Object.fromEntries(
+        outgoing.map((transition) => {
+          const targetState = stateByKey.get(transition.target);
+          const sameParent =
+            targetState?.parentKey === state.parentKey &&
+            (childrenByParent.get(state.key) ?? []).length === 0;
+          const targetIsChild = targetState?.parentKey === state.key;
+          const target =
+            hasHierarchy && targetIsChild
+              ? `.${targetState?.key ?? transition.target}`
+              : hasHierarchy && !sameParent
+              ? `#${targetState?.stateId ?? transition.target}`
+              : transition.target;
+          return [
+            transition.event,
+            {
+              target,
+              ...(transition.actions.length ? { actions: serializeActions(transition.actions) } : {}),
+            },
+          ];
+        }),
+      );
+    }
+    return stateJson;
+  };
+
+  for (const state of childrenByParent.get(undefined) ?? []) {
+    machine.states[state.key] = serializeState(state);
   }
+  if (hasHierarchy) machine.initial = graph.initial;
 
   return machine;
 }
@@ -427,124 +524,127 @@ export function machineJSONToGraph(
     issues.push('machine.states must contain at least one state.');
   }
 
-  const stateEntries = isRecord(input.states)
-    ? Object.entries(input.states)
-    : [];
-  const stateKeys = new Set(stateEntries.map(([key]) => key));
-  if (typeof input.initial === 'string' && !stateKeys.has(input.initial)) {
-    issues.push(`machine.initial refers to missing state ${input.initial}.`);
+  type RawState = { key: string; parentKey?: string; raw: Record<string, unknown>; path: string; index: number; localIndex: number };
+  const rawStates: RawState[] = [];
+  const stateIds = new Map<string, string>();
+  const collectStates = (entries: [string, unknown][], parentKey?: string) => {
+    entries.forEach(([key, rawState], localIndex) => {
+      const path = parentKey ? `machine.states.${parentKey}.states.${key}` : `machine.states.${key}`;
+      if (!key.trim()) issues.push('State keys cannot be empty.');
+      if (!isRecord(rawState)) {
+        issues.push(`${path} must be an object.`);
+        return;
+      }
+      if (rawStates.some((state) => state.key === key)) {
+        issues.push(`State keys must be unique. Duplicate key ${key}.`);
+      }
+      const index = rawStates.length;
+      rawStates.push({ key, parentKey, raw: rawState, path, index, localIndex });
+      if (rawState.id !== undefined) {
+        if (typeof rawState.id !== 'string' || !rawState.id.trim()) {
+          issues.push(`${path}.id must be a non-empty string.`);
+        } else if (stateIds.has(rawState.id)) {
+          issues.push(`State id ${rawState.id} must be unique.`);
+        } else {
+          stateIds.set(rawState.id, key);
+        }
+      }
+      if (rawState.states !== undefined) {
+        if (!isRecord(rawState.states) || Object.keys(rawState.states).length === 0) {
+          issues.push(`${path}.states must contain at least one state.`);
+        } else {
+          collectStates(Object.entries(rawState.states), key);
+        }
+      }
+    });
+  };
+  const stateEntries = isRecord(input.states) ? Object.entries(input.states) : [];
+  collectStates(stateEntries);
+  const stateKeys = new Set(rawStates.map((state) => state.key));
+  if (typeof input.initial === 'string' && !rawStates.some((state) => state.key === input.initial && state.parentKey === undefined)) {
+    issues.push(`machine.initial refers to missing top-level state ${input.initial}.`);
   }
 
   const states: GraphState[] = [];
   const transitions: GraphTransition[] = [];
-
-  stateEntries.forEach(([key, rawState], stateIndex) => {
-    const path = `machine.states.${key}`;
-    if (!key.trim()) issues.push('State keys cannot be empty.');
-    if (!isRecord(rawState)) {
-      issues.push(`${path} must be an object.`);
-      return;
+  const resolveTarget = (source: RawState, target: string) => {
+    const normalized = target.trim();
+    if (normalized.startsWith('#')) {
+      const id = normalized.slice(1);
+      return stateIds.get(id) ?? id;
     }
+    if (normalized.startsWith('.')) return normalized.slice(1);
+    if (stateKeys.has(normalized)) return normalized;
+    const parent = source.parentKey;
+    if (parent) {
+      const sibling = rawStates.find((state) => state.parentKey === parent && state.key === normalized);
+      if (sibling) return sibling.key;
+    }
+    return normalized;
+  };
 
+  rawStates.forEach((entry) => {
+    const { key, raw: rawState, path, parentKey, index, localIndex } = entry;
     assertOnlyKeys(rawState, STATE_KEYS, path, issues);
-    if (rawState.type !== undefined && rawState.type !== 'final') {
-      issues.push(`${path}.type only supports "final".`);
-    }
+    if (rawState.type !== undefined && rawState.type !== 'final') issues.push(`${path}.type only supports "final".`);
     const final = rawState.type === 'final';
-    const stateDescription = validateOptionalString(
-      rawState.description,
-      `${path}.description`,
-      issues,
-    );
+    const stateDescription = validateOptionalString(rawState.description, `${path}.description`, issues);
     const stateTags = validateTags(rawState.tags, `${path}.tags`, issues);
     const stateMeta = rawState.meta;
-    if (stateMeta !== undefined)
-      validateJsonValue(stateMeta, `${path}.meta`, issues);
-
-    const savedPosition = editorNodes[key];
-    const entryActions = parseActions(
-      rawState.entry,
-      `${path}.entry`,
-      key,
-      'entry',
-      issues,
-    );
-    const exitActions = parseActions(
-      rawState.exit,
-      `${path}.exit`,
-      key,
-      'exit',
-      issues,
-    );
-    if (final && exitActions.length > 0) {
-      issues.push(`Final state ${key} cannot have exit actions.`);
+    if (stateMeta !== undefined) validateJsonValue(stateMeta, `${path}.meta`, issues);
+    const childEntries = isRecord(rawState.states) ? Object.entries(rawState.states) : [];
+    const initialChild = rawState.initial;
+    if (childEntries.length > 0) {
+      if (typeof initialChild !== 'string' || !initialChild.trim()) issues.push(`${path}.initial must name one child state.`);
+      else if (!childEntries.some(([childKey]) => childKey === initialChild)) issues.push(`${path}.initial refers to missing child ${initialChild}.`);
+    } else if (initialChild !== undefined) {
+      issues.push(`${path}.initial is only valid for a parent state with child states.`);
     }
-
+    const savedPosition = editorNodes[key];
+    const entryActions = parseActions(rawState.entry, `${path}.entry`, key, 'entry', issues);
+    const exitActions = parseActions(rawState.exit, `${path}.exit`, key, 'exit', issues);
+    if (final && exitActions.length > 0) issues.push(`Final state ${key} cannot have exit actions.`);
     states.push({
       key,
-      position:
-        savedPosition &&
-        Number.isFinite(savedPosition.x) &&
-        Number.isFinite(savedPosition.y)
-          ? { x: savedPosition.x, y: savedPosition.y }
-          : autoPosition(stateIndex),
+      ...(typeof rawState.id === 'string' && rawState.id.trim()
+        ? { stateId: rawState.id.trim() }
+        : {}),
+      ...(parentKey !== undefined ? { parentKey } : {}),
+      ...(childEntries.length && typeof initialChild === 'string' ? { initialChild } : {}),
+      position: savedPosition && Number.isFinite(savedPosition.x) && Number.isFinite(savedPosition.y) ? { x: savedPosition.x, y: savedPosition.y } : autoPosition(parentKey ? localIndex : index),
       final,
       description: stateDescription,
       tags: stateTags,
       entryActions,
       exitActions,
-      ...(stateMeta !== undefined &&
-      validateJsonValue(stateMeta, `${path}.meta`, issues)
-        ? { meta: stateMeta }
-        : {}),
+      ...(stateMeta !== undefined && validateJsonValue(stateMeta, `${path}.meta`, issues) ? { meta: stateMeta as JsonValue } : {}),
     });
+  });
 
-    if (rawState.on === undefined) return;
-    if (!isRecord(rawState.on)) {
-      issues.push(`${path}.on must be an object keyed by event name.`);
+  rawStates.forEach((entry) => {
+    const rawOn = entry.raw.on;
+    if (rawOn === undefined) return;
+    if (!isRecord(rawOn)) {
+      issues.push(`${entry.path}.on must be an object keyed by event name.`);
       return;
     }
-    if (final && Object.keys(rawState.on).length > 0) {
-      issues.push(`Final state ${key} cannot have outgoing transitions.`);
-    }
-
-    Object.entries(rawState.on).forEach(([event, rawTransition]) => {
-      const transitionPath = `${path}.on.${event}`;
-      if (!event.trim())
-        issues.push(`${path}.on contains an empty event name.`);
+    if (entry.raw.type === 'final' && Object.keys(rawOn).length > 0) issues.push(`Final state ${entry.key} cannot have outgoing transitions.`);
+    Object.entries(rawOn).forEach(([event, rawTransition]) => {
+      const transitionPath = `${entry.path}.on.${event}`;
+      if (!event.trim()) issues.push(`${entry.path}.on contains an empty event name.`);
       if (!isRecord(rawTransition)) {
-        issues.push(
-          `${transitionPath} must use the object form { "target": "state" }.`,
-        );
+        issues.push(`${transitionPath} must use the object form { "target": "state" }.`);
         return;
       }
       assertOnlyKeys(rawTransition, TRANSITION_KEYS, transitionPath, issues);
-      if (
-        typeof rawTransition.target !== 'string' ||
-        !rawTransition.target.trim()
-      ) {
+      if (typeof rawTransition.target !== 'string' || !rawTransition.target.trim()) {
         issues.push(`${transitionPath}.target must name one state.`);
         return;
       }
-      if (!stateKeys.has(rawTransition.target)) {
-        issues.push(
-          `${transitionPath}.target refers to missing state ${rawTransition.target}.`,
-        );
-      }
-      const actions = parseActions(
-        rawTransition.actions,
-        `${transitionPath}.actions`,
-        key,
-        event,
-        issues,
-      );
-      transitions.push({
-        id: transitionId(key, event, transitions.length),
-        source: key,
-        target: rawTransition.target,
-        event,
-        actions,
-      });
+      const target = resolveTarget(entry, rawTransition.target);
+      if (!stateKeys.has(target)) issues.push(`${transitionPath}.target refers to missing state ${rawTransition.target}.`);
+      const actions = parseActions(rawTransition.actions, `${transitionPath}.actions`, entry.key, event, issues);
+      transitions.push({ id: transitionId(entry.key, event, transitions.length), source: entry.key, target, event, actions });
     });
   });
 
