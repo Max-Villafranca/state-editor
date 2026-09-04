@@ -663,6 +663,89 @@ test('drag selection moves multiple nodes while middle-click and Space drag pan'
   await expect.poll(() => viewportTransform(viewport)).not.toBe(beforeSpacePan);
 });
 
+test('grouping the global initial state preserves both initial scopes on export', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const writes: string[] = [];
+    Object.defineProperty(window, '__groupInitialExportWrites', {
+      value: writes,
+    });
+    Object.defineProperty(window, 'showSaveFilePicker', {
+      configurable: true,
+      value: async () => ({
+        name: 'groupInitial.json',
+        createWritable: async () => ({
+          write: async (contents: string) => writes.push(contents),
+          close: async () => undefined,
+        }),
+      }),
+    });
+  });
+  await page.goto('/');
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'groupInitial.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        id: 'groupInitial',
+        initial: 'one',
+        states: { one: {}, two: {}, three: {} },
+      }),
+    ),
+  });
+  await expect(page.getByText('Imported groupInitial.json')).toBeVisible();
+  await page.waitForTimeout(350);
+
+  const first = page.locator('.react-flow__node[data-id="one"]');
+  const second = page.locator('.react-flow__node[data-id="two"]');
+  const paneBox = await requiredBox(page.locator('.react-flow__pane'));
+  const firstBox = await requiredBox(first);
+  const secondBox = await requiredBox(second);
+  await dragPointer(
+    page,
+    {
+      x: Math.max(paneBox.x + 4, Math.min(firstBox.x, secondBox.x) - 16),
+      y: Math.max(paneBox.y + 4, Math.min(firstBox.y, secondBox.y) - 16),
+    },
+    {
+      x:
+        Math.max(firstBox.x + firstBox.width, secondBox.x + secondBox.width) +
+        16,
+      y:
+        Math.max(firstBox.y + firstBox.height, secondBox.y + secondBox.height) +
+        16,
+    },
+  );
+  await expect(page.locator('.react-flow__node.selected')).toHaveCount(2);
+
+  await page.getByRole('button', { name: 'Group', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Group states' });
+  await dialog.getByLabel('Parent state name').fill('workflow');
+  await dialog.getByLabel('Initial child').selectOption('one');
+  await dialog
+    .getByRole('button', { name: 'Group states', exact: true })
+    .click();
+
+  const parent = page.locator('.react-flow__node[data-id="workflow"]');
+  await expect(parent).toBeVisible();
+  await expect(
+    page
+      .locator('.react-flow__node[data-id="one"]')
+      .getByLabel('Initial child state'),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Export JSON' }).click();
+  const exported = await page.evaluate(() => {
+    const writes = (
+      window as unknown as { __groupInitialExportWrites: string[] }
+    ).__groupInitialExportWrites;
+    return JSON.parse(writes.at(-1) ?? 'null');
+  });
+  expect(exported.initial).toBe('workflow');
+  expect(exported.states.workflow.initial).toBe('one');
+  expect(Object.keys(exported.states.workflow.states)).toEqual(['one', 'two']);
+  expect(exported.states.three).toEqual({ id: 'three' });
+});
 test('duplicating a state copies its data into an offset visual node', async ({
   page,
 }) => {
@@ -763,6 +846,170 @@ test('double-clicking empty canvas creates a state without zooming', async ({
   await expect.poll(() => viewportTransform(viewport)).toBe(transformBefore);
 });
 
+test('parent transitions float on the frame while ordinary transitions keep node handles', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'routing.se.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        format: 'state-editor-project',
+        version: 1,
+        xstateTarget: 'v6-machine-json',
+        machine: {
+          id: 'routingDemo',
+          initial: 'group',
+          states: {
+            group: {
+              initial: 'inside',
+              states: { inside: {} },
+              on: { LEAVE: { target: 'outside' } },
+            },
+            outside: { on: { RETURN: { target: 'group' } } },
+            leafA: { on: { NEXT: { target: 'leafB' } } },
+            leafB: {},
+          },
+        },
+        editor: {
+          nodes: {
+            group: { x: 80, y: 80 },
+            inside: { x: 48, y: 76 },
+            outside: { x: 620, y: 180 },
+            leafA: { x: 100, y: 520 },
+            leafB: { x: 620, y: 520 },
+          },
+          viewport: { x: 0, y: 0, zoom: 1 },
+          selection: { kind: 'machine', id: 'machine' },
+        },
+      }),
+    ),
+  });
+  await expect(page.getByText('Opened routing.se.json')).toBeVisible();
+  await expect(
+    page.locator('[data-transition-route="group->outside"]'),
+  ).toBeVisible();
+  await expect(
+    page.locator('[data-transition-route="outside->group"]'),
+  ).toBeVisible();
+  await expect(
+    page.locator('[data-transition-route="leafA->leafB"]'),
+  ).toBeVisible();
+
+  const readGeometry = () =>
+    page.evaluate(() => {
+      type Point = { x: number; y: number };
+      const routeEndpoints = (routeId: string) => {
+        const path = document.querySelector<SVGPathElement>(
+          `.react-flow__edge[data-id="${routeId}"] .react-flow__edge-path`,
+        );
+        if (!path) return null;
+        const numbers = (
+          path.getAttribute('d')?.match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi) ?? []
+        ).map(Number);
+        const matrix = path.getScreenCTM();
+        const svg = path.ownerSVGElement;
+        if (numbers.length < 4 || !matrix || !svg) return null;
+        const toScreen = (x: number, y: number): Point => {
+          const point = svg.createSVGPoint();
+          point.x = x;
+          point.y = y;
+          const transformed = point.matrixTransform(matrix);
+          return { x: transformed.x, y: transformed.y };
+        };
+        return {
+          start: toScreen(numbers[0], numbers[1]),
+          end: toScreen(numbers.at(-2)!, numbers.at(-1)!),
+        };
+      };
+      const center = (element: Element | null): Point | null => {
+        if (!element) return null;
+        const box = element.getBoundingClientRect();
+        return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      };
+      const distance = (first: Point, second: Point) =>
+        Math.hypot(first.x - second.x, first.y - second.y);
+      const onBoundary = (point: Point, box: DOMRect) => {
+        const inside =
+          point.x >= box.left - 2 &&
+          point.x <= box.right + 2 &&
+          point.y >= box.top - 2 &&
+          point.y <= box.bottom + 2;
+        const sideDistance = Math.min(
+          Math.abs(point.x - box.left),
+          Math.abs(point.x - box.right),
+          Math.abs(point.y - box.top),
+          Math.abs(point.y - box.bottom),
+        );
+        return inside && sideDistance < 3;
+      };
+      const parent = document.querySelector(
+        '.react-flow__node[data-id="group"]',
+      );
+      const outside = document.querySelector(
+        '.react-flow__node[data-id="outside"]',
+      );
+      const leafA = document.querySelector(
+        '.react-flow__node[data-id="leafA"]',
+      );
+      const leafB = document.querySelector(
+        '.react-flow__node[data-id="leafB"]',
+      );
+      const outbound = routeEndpoints('transition-route:group:outside');
+      const inbound = routeEndpoints('transition-route:outside:group');
+      const ordinary = routeEndpoints('transition-route:leafA:leafB');
+      const outsideInput = center(
+        outside?.querySelector('.react-flow__handle-left') ?? null,
+      );
+      const outsideOutput = center(
+        outside?.querySelector('.react-flow__handle-right') ?? null,
+      );
+      const leafOutput = center(
+        leafA?.querySelector('.react-flow__handle-right') ?? null,
+      );
+      const leafInput = center(
+        leafB?.querySelector('.react-flow__handle-left') ?? null,
+      );
+      if (
+        !parent ||
+        !outbound ||
+        !inbound ||
+        !ordinary ||
+        !outsideInput ||
+        !outsideOutput ||
+        !leafOutput ||
+        !leafInput
+      )
+        return null;
+      const parentBox = parent.getBoundingClientRect();
+      return {
+        outboundStartsOnFrame: onBoundary(outbound.start, parentBox),
+        inboundEndsOnFrame: onBoundary(inbound.end, parentBox),
+        separatedFrameEndpoints: distance(outbound.start, inbound.end),
+        outboundLeafDistance: distance(outbound.end, outsideInput),
+        inboundLeafDistance: distance(inbound.start, outsideOutput),
+        ordinarySourceDistance: distance(ordinary.start, leafOutput),
+        ordinaryTargetDistance: distance(ordinary.end, leafInput),
+      };
+    });
+  await expect.poll(readGeometry).not.toBeNull();
+  const geometry = await readGeometry();
+
+  expect(geometry).toMatchObject({
+    outboundStartsOnFrame: true,
+    inboundEndsOnFrame: true,
+  });
+  expect(geometry!.separatedFrameEndpoints).toBeGreaterThan(10);
+  expect(
+    Math.max(
+      geometry!.outboundLeafDistance,
+      geometry!.inboundLeafDistance,
+      geometry!.ordinarySourceDistance,
+      geometry!.ordinaryTargetDistance,
+    ),
+  ).toBeLessThan(7);
+});
 test('deleting a parent keeps child transitions and uses one undo step', async ({
   page,
 }) => {
@@ -801,27 +1048,56 @@ test('deleting a parent keeps child transitions and uses one undo step', async (
       }),
     ),
   });
-  await expect(page.getByRole('button', { name: 'contacting', exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'contacting', exact: true }),
+  ).toBeVisible();
   const newState = page.locator('.react-flow__node[data-id="done"]');
   const parentFrame = page.locator('.react-flow__node[data-id="contacting"]');
+  const initialChild = page.locator('.react-flow__node[data-id="calling"]');
+  const parentInput = parentFrame.locator('.react-flow__handle-left');
+  const parentOutput = parentFrame.locator('.react-flow__handle-right');
+  await expect(parentInput).toHaveCount(1);
+  await expect(parentOutput).toHaveCount(1);
+  await expect(initialChild.getByLabel('Initial child state')).toBeVisible();
+  await expect
+    .poll(async () => {
+      const frameBox = await requiredBox(parentFrame);
+      const inputBox = await requiredBox(parentInput);
+      const outputBox = await requiredBox(parentOutput);
+      const centerY = frameBox.y + frameBox.height / 2;
+      return Math.max(
+        Math.abs(inputBox.y + inputBox.height / 2 - centerY),
+        Math.abs(outputBox.y + outputBox.height / 2 - centerY),
+      );
+    })
+    .toBeLessThan(2);
+  expect((await requiredBox(parentInput)).width).toBeGreaterThanOrEqual(16);
+  expect((await requiredBox(parentOutput)).width).toBeGreaterThanOrEqual(16);
   const newStateBox = await requiredBox(newState);
   const parentFrameBox = await requiredBox(parentFrame);
-  await dragPointer(
-    page,
-    centerOf(newStateBox),
-    { x: parentFrameBox.x + parentFrameBox.width - 80, y: parentFrameBox.y + parentFrameBox.height - 60 },
-  );
+  await dragPointer(page, centerOf(newStateBox), {
+    x: parentFrameBox.x + parentFrameBox.width - 80,
+    y: parentFrameBox.y + parentFrameBox.height - 60,
+  });
   await page.getByRole('button', { name: 'Export JSON' }).click();
   const groupedExport = await page.evaluate(() =>
     JSON.parse(
-      (window as unknown as { __parentExportWrites: string[] }).__parentExportWrites.at(-1) ??
-        'null',
+      (
+        window as unknown as { __parentExportWrites: string[] }
+      ).__parentExportWrites.at(-1) ?? 'null',
     ),
   );
-  expect(groupedExport.states.contacting.states.done).toEqual({ id: 'done', type: 'final' });
+  expect(groupedExport.states.contacting.states.done).toEqual({
+    id: 'done',
+    type: 'final',
+  });
   const stacking = await page.evaluate(() => {
-    const parent = document.querySelector<HTMLElement>('.react-flow__node[data-id="contacting"]');
-    const child = document.querySelector<HTMLElement>('.react-flow__node[data-id="calling"]');
+    const parent = document.querySelector<HTMLElement>(
+      '.react-flow__node[data-id="contacting"]',
+    );
+    const child = document.querySelector<HTMLElement>(
+      '.react-flow__node[data-id="calling"]',
+    );
     const edge = document.querySelector<HTMLElement>('.react-flow__edge');
     const zIndex = (element: HTMLElement | null) => {
       const parsed = Number.parseInt(getComputedStyle(element!).zIndex, 10);
@@ -837,21 +1113,30 @@ test('deleting a parent keeps child transitions and uses one undo step', async (
   expect(stacking.child).toBeGreaterThan(stacking.edge);
   await page.getByRole('button', { name: 'contacting', exact: true }).click();
   await page.keyboard.press('Delete');
-  await expect(page.getByRole('button', { name: 'contacting', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'calling', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'voicemail', exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'contacting', exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'calling', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'voicemail', exact: true }),
+  ).toBeVisible();
 
   await page.getByRole('button', { name: 'Export JSON' }).click();
   const exported = await page.evaluate(() =>
     JSON.parse(
-      (window as unknown as { __parentExportWrites: string[] }).__parentExportWrites.at(-1) ??
-        'null',
+      (
+        window as unknown as { __parentExportWrites: string[] }
+      ).__parentExportWrites.at(-1) ?? 'null',
     ),
   );
   expect(exported.states.calling.on.VOICEMAIL.target).toBe('voicemail');
 
   await page.getByRole('button', { name: 'Undo' }).click();
-  await expect(page.getByRole('button', { name: 'contacting', exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'contacting', exact: true }),
+  ).toBeVisible();
 });
 
 async function pickerState(page: import('@playwright/test').Page) {

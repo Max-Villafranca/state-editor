@@ -35,5 +35,24 @@ describe('machine hierarchy behavior', () => {
   it('marks parent and active descendants reachable', () => {
     expect(getReachableStateKeys(graph)).toEqual(new Set(['calling', 'contacting', 'interested']));
   });
+
+  it('allows transitions back to a scoped initial child', () => {
+    const graphWithReturn = machineJSONToGraph({
+      initial: 'workflow',
+      states: {
+        workflow: {
+          initial: 'ready',
+          states: {
+            ready: {},
+            paused: { on: { RESUME: { target: 'ready' } } },
+          },
+        },
+      },
+    });
+
+    expect(graphWithReturn.transitions).toContainEqual(
+      expect.objectContaining({ source: 'paused', target: 'ready', event: 'RESUME' }),
+    );
+  });
 });
 

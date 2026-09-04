@@ -196,6 +196,7 @@ const EDITOR_FILE_TYPES = [
 type StateNodeData = Record<string, unknown> & {
   label: string;
   initial: boolean;
+  initialWithinParent: boolean;
   final: boolean;
   unreachable: boolean;
   current: boolean;
@@ -253,12 +254,12 @@ function StateRenameInput({
   );
 }
 
-function InitialStateMark() {
+function InitialStateMark({ label = 'Initial state' }: { label?: string }) {
   return (
     <span
       className="flex items-center text-violet-700 dark:text-violet-300"
-      aria-label="Initial state"
-      title="Initial state"
+      aria-label={label}
+      title={label}
     >
       <span className="size-2.5 rounded-full bg-current" />
       <span className="h-px w-2 bg-current" />
@@ -307,15 +308,24 @@ function StateNode({ data, selected }: NodeProps<StateFlowNode>) {
     >
       {!data.simulating && (
         <Handle
+          id={isParent ? 'parent-target' : undefined}
           type="target"
           position={Position.Left}
-          className="!size-2.5 !border-2 !border-[var(--editor-panel)] !bg-slate-500 dark:!bg-slate-400"
+          isConnectableStart={false}
+          style={isParent ? { top: '50%' } : undefined}
+          className={
+            isParent
+              ? '!size-4 !border-2 !border-slate-500 !bg-[var(--editor-panel)] opacity-70 transition-opacity hover:opacity-100 dark:!border-slate-400'
+              : '!size-2.5 !border-2 !border-[var(--editor-panel)] !bg-slate-500 dark:!bg-slate-400'
+          }
         />
       )}
       <div className="flex items-center gap-2">
-        {data.initial && (
+        {(data.initial || data.initialWithinParent) && (
           <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-violet-100 dark:bg-violet-500/15">
-            <InitialStateMark />
+            <InitialStateMark
+              label={data.initialWithinParent ? 'Initial child state' : 'Initial state'}
+            />
           </span>
         )}
         {data.final && (
@@ -351,11 +361,13 @@ function StateNode({ data, selected }: NodeProps<StateFlowNode>) {
               ? 'Unreachable'
               : data.final
                 ? 'Final state'
-                : data.initial
-                  ? 'Initial state'
-              : isParent
-                ? `Parent state · ${data.childCount} ${data.childCount === 1 ? 'child' : 'children'}`
-                : 'State'}
+                : isParent
+                  ? `${data.initial ? 'Initial parent state' : 'Parent state'} · ${data.childCount} ${data.childCount === 1 ? 'child' : 'children'}`
+                  : data.initialWithinParent
+                    ? 'Initial child state'
+                    : data.initial
+                      ? 'Initial state'
+                      : 'State'}
         </span>
         {data.unreachable ? (
           <TriangleAlert className="size-3.5 text-orange-500 dark:text-orange-400" />
@@ -365,9 +377,16 @@ function StateNode({ data, selected }: NodeProps<StateFlowNode>) {
       </div>
       {!data.simulating && !data.final && (
         <Handle
+          id={isParent ? 'parent-source' : undefined}
           type="source"
           position={Position.Right}
-          className="!size-2.5 !border-2 !border-[var(--editor-panel)] !bg-violet-500 dark:!bg-violet-400"
+          isConnectableEnd={false}
+          style={isParent ? { top: '50%' } : undefined}
+          className={
+            isParent
+              ? '!size-4 !border-2 !border-[var(--editor-panel)] !bg-violet-500 opacity-80 transition-opacity hover:opacity-100 dark:!bg-violet-400'
+              : '!size-2.5 !border-2 !border-[var(--editor-panel)] !bg-violet-500 dark:!bg-violet-400'
+          }
         />
       )}
     </div>
@@ -1017,6 +1036,11 @@ function EditorSurface() {
           data: {
             label: state.key,
             initial: graph.initial === state.key,
+            initialWithinParent: Boolean(
+              state.parentKey &&
+                graph.states.find((candidate) => candidate.key === state.parentKey)?.initialChild ===
+                  state.key,
+            ),
             final: state.final,
             unreachable: !reachableStateKeys.has(state.key),
             current: simulationState === state.key,
@@ -1092,6 +1116,8 @@ function EditorSurface() {
         data: {
           sourceLabel: route.source,
           targetLabel: route.target,
+          sourceIsParent: getStateChildren(graph, route.source).length > 0,
+          targetIsParent: getStateChildren(graph, route.target).length > 0,
           laneOffset: route.laneOffset,
           reciprocal: route.reciprocal,
           analysisHighlighted,
@@ -1136,6 +1162,7 @@ function EditorSurface() {
     selectedTransitionIds,
     simulating,
     transitionRoutes,
+    graph,
   ]);
 
   const removeStates = useCallback(
