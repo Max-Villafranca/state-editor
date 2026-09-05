@@ -6,7 +6,7 @@ A lightweight, local-first visual editor for small XState v6 state machines. It 
 
 ## What it supports
 
-- Flat state machines plus compound parent states with an initial child
+- Flat state machines and recursively nested compound parent states, each with an initial child
 - Event-driven transitions
 - Entry, exit, and transition actions with optional JSON parameters
 - State and machine descriptions, tags, and metadata
@@ -17,7 +17,9 @@ A lightweight, local-first visual editor for small XState v6 state machines. It 
 - Project files that retain editor layout (`.se.json`)
 - Clean XState MachineJSON exports (`.json`)
 
-The editor intentionally omits parallel states, guards, actors, delayed transitions, eventless transitions, and executable inline code. Parent states are the supported form of nesting: child transitions are edited in place, parent transitions are inherited by active children, and cross-boundary targets export with stable XState ids.
+The editor intentionally omits parallel states, guards, actors, delayed transitions, eventless transitions, and executable inline code. Select sibling states at any depth and use **Create parent** in Properties to wrap them in a parent. **Remove from parent** moves a state up one level. Deleting a parent keeps its children and their transitions.
+
+Parent states are the supported form of nesting: child transitions are edited in place, parent transitions are inherited by active children, and cross-boundary targets export with stable XState ids.
 
 ## Run locally
 
@@ -42,7 +44,7 @@ Local browser storage is used only as automatic recovery; it is not a replacemen
 
 - Double-click empty canvas or use **Add state** to create a state.
 - Drag from a state handle to another state to create a transition.
-- Drag empty canvas to select multiple nodes.
+- Drag empty canvas to select fully enclosed nodes. Hold Shift while dragging inside a parent frame; a fully enclosed frame is selected as one unit.
 - Middle-drag or hold Space while dragging to pan.
 - Use `Ctrl/Cmd+Z` to undo and `Ctrl/Cmd+Shift+Z` to redo.
 - Select a state or transition to edit its details in the inspector.

@@ -689,7 +689,7 @@ test('grouping the global initial state preserves both initial scopes on export'
     buffer: Buffer.from(
       JSON.stringify({
         id: 'groupInitial',
-        initial: 'one',
+        initial: 'two',
         states: { one: {}, two: {}, three: {} },
       }),
     ),
@@ -719,19 +719,40 @@ test('grouping the global initial state preserves both initial scopes on export'
   );
   await expect(page.locator('.react-flow__node.selected')).toHaveCount(2);
 
-  await page.getByRole('button', { name: 'Group', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'Group states' });
+  const properties = page.locator('aside');
+  await expect(
+    properties.getByRole('heading', { name: '2 states selected' }),
+  ).toBeVisible();
+  await expect(properties.getByLabel('State key', { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(
+    page
+      .locator('header')
+      .getByRole('button', { name: 'Create parent', exact: true }),
+  ).toHaveCount(0);
+  await properties
+    .getByRole('button', { name: 'Create parent', exact: true })
+    .click();
+  const dialog = page.getByRole('dialog', { name: 'Create parent state' });
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(
+    properties.getByRole('heading', { name: '2 states selected' }),
+  ).toBeVisible();
+  await properties
+    .getByRole('button', { name: 'Create parent', exact: true })
+    .click();
   await dialog.getByLabel('Parent state name').fill('workflow');
-  await dialog.getByLabel('Initial child').selectOption('one');
+  await expect(dialog.getByLabel('Initial child')).toHaveValue('two');
   await dialog
-    .getByRole('button', { name: 'Group states', exact: true })
+    .getByRole('button', { name: 'Create parent', exact: true })
     .click();
 
   const parent = page.locator('.react-flow__node[data-id="workflow"]');
   await expect(parent).toBeVisible();
   await expect(
     page
-      .locator('.react-flow__node[data-id="one"]')
+      .locator('.react-flow__node[data-id="two"]')
       .getByLabel('Initial child state'),
   ).toBeVisible();
   await page.getByRole('button', { name: 'Export JSON' }).click();
@@ -742,9 +763,41 @@ test('grouping the global initial state preserves both initial scopes on export'
     return JSON.parse(writes.at(-1) ?? 'null');
   });
   expect(exported.initial).toBe('workflow');
-  expect(exported.states.workflow.initial).toBe('one');
+  expect(exported.states.workflow.initial).toBe('two');
   expect(Object.keys(exported.states.workflow.states)).toEqual(['one', 'two']);
   expect(exported.states.three).toEqual({ id: 'three' });
+  await expect(properties.getByLabel('State key', { exact: true })).toHaveValue(
+    'workflow',
+  );
+  await expect(
+    properties.getByRole('button', { name: 'Create parent', exact: true }),
+  ).toHaveCount(0);
+
+  await page
+    .getByRole('button', { name: 'Edit machine details', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'one', exact: true }).click();
+  await page.keyboard.down('Control');
+  await page.getByRole('button', { name: 'three', exact: true }).click();
+  await page.keyboard.up('Control');
+  await expect(
+    properties.getByRole('heading', { name: '2 states selected' }),
+  ).toBeVisible();
+  await expect(
+    properties.getByRole('button', { name: 'Create parent', exact: true }),
+  ).toBeDisabled();
+  await expect(
+    properties.getByText('Select states that share the same parent.'),
+  ).toBeVisible();
+  await page.keyboard.down('Control');
+  await page.getByRole('button', { name: 'three', exact: true }).click();
+  await page.keyboard.up('Control');
+  await expect(properties.getByLabel('State key', { exact: true })).toHaveValue(
+    'one',
+  );
+  await expect(
+    properties.getByRole('heading', { name: '2 states selected' }),
+  ).toHaveCount(0);
 });
 test('duplicating a state copies its data into an offset visual node', async ({
   page,
@@ -1209,3 +1262,394 @@ async function dragPointer(
 async function viewportTransform(locator: import('@playwright/test').Locator) {
   return locator.evaluate((element) => getComputedStyle(element).transform);
 }
+
+test('initial controls keep machine and child scopes separate', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const writes: string[] = [];
+    Object.defineProperty(window, '__initialWrites', { value: writes });
+    Object.defineProperty(window, 'showSaveFilePicker', {
+      configurable: true,
+      value: async () => ({
+        name: 'initialScopes.json',
+        createWritable: async () => ({
+          write: async (contents: string) => writes.push(contents),
+          close: async () => undefined,
+        }),
+      }),
+    });
+  });
+  await page.goto('/');
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'initialScopes.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        id: 'initialScopes',
+        initial: 'workflow',
+        states: {
+          workflow: { initial: 'ready', states: { ready: {}, active: {} } },
+          other: { initial: 'waiting', states: { waiting: {} } },
+        },
+      }),
+    ),
+  });
+  const selectState = (key: string) =>
+    page.getByRole('button', { name: key, exact: true }).click();
+  const readWrites = () =>
+    page.evaluate(
+      () =>
+        (window as unknown as { __initialWrites: string[] }).__initialWrites,
+    );
+  const exportMachine = async () => {
+    const before = (await readWrites()).length;
+    await page
+      .getByRole('button', { name: 'Export JSON', exact: true })
+      .click();
+    await expect.poll(async () => (await readWrites()).length).toBe(before + 1);
+    return JSON.parse((await readWrites()).at(-1)!);
+  };
+
+  await selectState('active');
+  await page.getByRole('button', { name: /Set initial/ }).click();
+  let exported = await exportMachine();
+  expect(exported).not.toBeNull();
+  expect(exported.initial).toBe('workflow');
+  expect(exported.states.workflow.initial).toBe('active');
+  expect(exported.states.other.initial).toBe('waiting');
+
+  await expect(
+    page.getByRole('button', {
+      name: 'Initial child of workflow',
+      exact: true,
+    }),
+  ).toBeDisabled();
+  await expect(
+    page
+      .locator('.react-flow__node[data-id="active"]')
+      .getByLabel('Initial child state'),
+  ).toBeVisible();
+  await expect(
+    page
+      .locator('.react-flow__node[data-id="ready"]')
+      .getByLabel('Initial child state'),
+  ).toHaveCount(0);
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  exported = await exportMachine();
+  expect(exported.states.workflow.initial).toBe('ready');
+  await page.getByRole('button', { name: 'Redo', exact: true }).click();
+  await page.getByRole('button', { name: 'Simulate', exact: true }).click();
+  await expect(
+    page.locator('aside').getByRole('heading', { name: 'active', exact: true }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+
+  await selectState('workflow');
+  await expect(
+    page.getByRole('button', { name: 'Machine initial state', exact: true }),
+  ).toBeDisabled();
+  const initialChild = page.getByRole('combobox', {
+    name: 'Initial child',
+    exact: true,
+  });
+  await expect(initialChild).toHaveValue('active');
+  await expect(initialChild.locator('option')).toHaveText(['ready', 'active']);
+  await initialChild.selectOption('ready');
+  exported = await exportMachine();
+  expect(exported.initial).toBe('workflow');
+  expect(exported.states.workflow.initial).toBe('ready');
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(initialChild).toHaveValue('active');
+  await page.getByRole('button', { name: 'Redo', exact: true }).click();
+  await expect(initialChild).toHaveValue('ready');
+
+  await selectState('other');
+  await page
+    .getByRole('button', { name: 'Set initial state of machine', exact: true })
+    .click();
+  exported = await exportMachine();
+  expect(exported.initial).toBe('other');
+  expect(exported.states.workflow.initial).toBe('ready');
+  expect(exported.states.other.initial).toBe('waiting');
+  await page.reload();
+  await selectState('workflow');
+  await expect(
+    page.getByRole('combobox', { name: 'Initial child', exact: true }),
+  ).toHaveValue('ready');
+  await selectState('waiting');
+  await expect(
+    page.getByRole('button', { name: 'Initial child of other', exact: true }),
+  ).toBeDisabled();
+});
+
+test('nested parents preserve routes, scoped entry, subtree movement and one-step undo', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const writes: string[] = [];
+    Object.defineProperty(window, '__nestedWrites', { value: writes });
+    Object.defineProperty(window, 'showSaveFilePicker', {
+      configurable: true,
+      value: async () => ({
+        name: 'nested.json',
+        createWritable: async () => ({
+          write: async (contents: string) => writes.push(contents),
+          close: async () => undefined,
+        }),
+      }),
+    });
+  });
+  await page.goto('/');
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'nested.se.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        format: 'state-editor-project',
+        version: 1,
+        xstateTarget: 'v6-machine-json',
+        machine: {
+          id: 'nested',
+          initial: 'outer',
+          states: {
+            outer: {
+              initial: 'b',
+              states: {
+                a: { on: { NEXT: { target: 'b' } } },
+                b: { on: { BACK: { target: 'a' } } },
+                spare: {},
+              },
+              on: { FINISH: { target: '#done' } },
+            },
+            done: { id: 'done', type: 'final' },
+          },
+        },
+        editor: {
+          nodes: {
+            outer: { x: 40, y: 30 },
+            a: { x: 64, y: 160 },
+            b: { x: 330, y: 160 },
+            spare: { x: 64, y: 480 },
+            done: { x: 850, y: 50 },
+          },
+          viewport: { x: 0, y: 0, zoom: 0.8 },
+          selection: { kind: 'machine', id: 'machine' },
+        },
+      }),
+    ),
+  });
+  const node = (key: string) =>
+    page.locator('.react-flow__node[data-id="' + key + '"]');
+  const select = (key: string) =>
+    page.getByRole('button', { name: key, exact: true }).click();
+  const properties = page.locator('aside');
+  const exportMachine = async () => {
+    const read = () =>
+      page.evaluate(
+        () =>
+          (window as unknown as { __nestedWrites: string[] }).__nestedWrites,
+      );
+    const count = (await read()).length;
+    await page
+      .getByRole('button', { name: 'Export JSON', exact: true })
+      .click();
+    await expect.poll(async () => (await read()).length).toBe(count + 1);
+    return JSON.parse((await read()).at(-1)!);
+  };
+  const group = async (
+    first: string,
+    second: string,
+    name: string,
+    initial: string,
+  ) => {
+    await page
+      .getByRole('button', { name: 'Edit machine details', exact: true })
+      .click();
+    const firstBox = await requiredBox(node(first));
+    const secondBox = await requiredBox(node(second));
+    // Native Shift-drag starts a selection inside a frame without moving it.
+    await page.keyboard.down('Shift');
+    await dragPointer(
+      page,
+      {
+        x: Math.min(firstBox.x, secondBox.x) - 12,
+        y: Math.min(firstBox.y, secondBox.y) - 12,
+      },
+      {
+        x:
+          Math.max(firstBox.x + firstBox.width, secondBox.x + secondBox.width) +
+          12,
+        y:
+          Math.max(
+            firstBox.y + firstBox.height,
+            secondBox.y + secondBox.height,
+          ) + 12,
+      },
+    );
+    await page.keyboard.up('Shift');
+    await expect(
+      properties.getByRole('button', { name: 'Create parent', exact: true }),
+    ).toBeEnabled();
+    await expect(node('outer')).not.toHaveClass(/selected/);
+    await expect(node(first)).toHaveClass(/selected/);
+    await expect(node(second)).toHaveClass(/selected/);
+    await expect(page.locator('.react-flow__node.selected')).toHaveCount(2);
+    await properties
+      .getByRole('button', { name: 'Create parent', exact: true })
+      .click();
+    const dialog = page.getByRole('dialog', { name: 'Create parent state' });
+    await dialog.getByLabel('Parent state name').fill(name);
+    await expect(dialog.getByLabel('Initial child')).toHaveValue(initial);
+    await dialog
+      .getByRole('button', { name: 'Create parent', exact: true })
+      .click();
+    await expect(node(name)).toBeVisible();
+  };
+  const leafRoute = page.locator(
+    '.react-flow__edge[data-id="transition-route:a:b"] .react-flow__edge-path',
+  );
+  await expect(leafRoute).toHaveAttribute('d', /M/);
+  const originalRoute = await leafRoute.getAttribute('d');
+  const label = page.locator('[data-transition-route="a->b"]');
+  const originalLabel = await label.evaluate(
+    (element) => (element as HTMLElement).style.transform,
+  );
+  await group('a', 'b', 'inner', 'b');
+  await expect(leafRoute).toHaveAttribute('d', originalRoute!);
+  expect(
+    await label.evaluate((element) => (element as HTMLElement).style.transform),
+  ).toBe(originalLabel);
+  await group('inner', 'spare', 'middle', 'inner');
+  let exported = await exportMachine();
+  expect(exported.initial).toBe('outer');
+  expect(exported.states.outer.initial).toBe('middle');
+  expect(exported.states.outer.states.middle.initial).toBe('inner');
+  expect(exported.states.outer.states.middle.states.inner.initial).toBe('b');
+  expect(
+    exported.states.outer.states.middle.states.inner.states.a.on.NEXT.target,
+  ).toBe('b');
+
+  await page.locator('.react-flow__controls-fitview').click();
+  await page.waitForTimeout(400);
+  for (const [child, parent] of [
+    ['inner', 'middle'],
+    ['middle', 'outer'],
+    ['a', 'inner'],
+  ]) {
+    const childBox = await requiredBox(node(child));
+    const parentBox = await requiredBox(node(parent));
+    expect(childBox.x).toBeGreaterThan(parentBox.x);
+    expect(childBox.y).toBeGreaterThan(parentBox.y);
+    expect(childBox.x + childBox.width).toBeLessThan(
+      parentBox.x + parentBox.width,
+    );
+    expect(childBox.y + childBox.height).toBeLessThan(
+      parentBox.y + parentBox.height,
+    );
+  }
+  const layers = await page.evaluate(() => {
+    const layer = (selector: string) =>
+      Number(getComputedStyle(document.querySelector(selector)!).zIndex);
+    return {
+      outer: layer('.react-flow__node[data-id="outer"]'),
+      middle: layer('.react-flow__node[data-id="middle"]'),
+      inner: layer('.react-flow__node[data-id="inner"]'),
+      leaf: layer('.react-flow__node[data-id="a"]'),
+      edge: Number(
+        getComputedStyle(
+          document.querySelector('.react-flow__edge')!.parentElement!,
+        ).zIndex,
+      ),
+    };
+  });
+  expect(layers.middle).toBeGreaterThan(layers.outer);
+  expect(layers.inner).toBeGreaterThan(layers.middle);
+  expect(layers.edge).toBeGreaterThan(layers.inner);
+  expect(layers.leaf).toBeGreaterThan(layers.edge);
+  await page.screenshot({ path: test.info().outputPath('nested-parents.png') });
+
+  const before = await requiredBox(node('b'));
+  const handle = await requiredBox(
+    page.getByRole('button', { name: 'outer', exact: true }),
+  );
+  // Drag the frame's header background, not its name button (which is deliberately non-draggable).
+  await dragPointer(
+    page,
+    { x: handle.x + handle.width + 50, y: handle.y + 8 },
+    { x: handle.x + handle.width + 85, y: handle.y + 33 },
+  );
+  const after = await requiredBox(node('b'));
+  expect(after.x - before.x).toBeGreaterThan(20);
+  expect(after.y - before.y).toBeGreaterThan(15);
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expectPositionNear(node('b'), before);
+
+  await select('inner');
+  await page.keyboard.press('Delete');
+  await expect(node('inner')).toHaveCount(0);
+  exported = await exportMachine();
+  expect(exported.states.outer.states.middle.initial).toBe('b');
+  expect(exported.states.outer.states.middle.states.a.on.NEXT.target).toBe('b');
+  expect(exported.states.outer.states.middle.states.b.on.BACK.target).toBe('a');
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(node('inner')).toBeVisible();
+  exported = await exportMachine();
+  expect(exported.states.outer.states.middle.states.inner.initial).toBe('b');
+
+  await select('b');
+  await properties
+    .getByRole('button', { name: 'Remove from parent', exact: true })
+    .click();
+  exported = await exportMachine();
+  expect(exported.states.outer.states.middle.states.b).toBeTruthy();
+  expect(exported.states.outer.states.middle.states.inner.initial).toBe('a');
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  exported = await exportMachine();
+  expect(exported.states.outer.states.middle.states.inner.initial).toBe('b');
+
+  await page
+    .getByRole('button', { name: 'Edit machine details', exact: true })
+    .click();
+  const innerBox = await requiredBox(node('inner'));
+  await page.mouse.dblclick(
+    innerBox.x + 40,
+    innerBox.y + innerBox.height - 60,
+    { delay: 80 },
+  );
+  await page.keyboard.press('Enter');
+  exported = await exportMachine();
+  expect(
+    exported.states.outer.states.middle.states.inner.states.state8,
+  ).toBeTruthy();
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(node('state8')).toHaveCount(0);
+
+  await select('done');
+  const doneBeforeDrop = await requiredBox(node('done'));
+  const targetFrame = await requiredBox(node('inner'));
+  await dragPointer(page, centerOf(doneBeforeDrop), {
+    x: targetFrame.x + targetFrame.width / 2,
+    y: targetFrame.y + targetFrame.height - 60,
+  });
+  exported = await exportMachine();
+  expect(
+    exported.states.outer.states.middle.states.inner.states.done,
+  ).toMatchObject({ type: 'final' });
+  expect(exported.states.done).toBeUndefined();
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expectPositionNear(node('done'), doneBeforeDrop);
+  exported = await exportMachine();
+  expect(exported.states.done).toMatchObject({ type: 'final' });
+
+  await page.reload();
+  await expect(node('inner')).toBeVisible();
+  await page.getByRole('button', { name: 'Simulate', exact: true }).click();
+  await expect(
+    properties.getByRole('heading', { name: 'b', exact: true }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'FINISH', exact: true }).click();
+  await expect(
+    page.getByText('Machine complete', { exact: true }),
+  ).toBeVisible();
+});

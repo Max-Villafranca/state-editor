@@ -103,6 +103,14 @@ import {
   getInitialLeafState,
   getReachableStateKeys as getHierarchyReachableStateKeys,
   getStateChildren,
+  getState,
+  getHierarchyLayout,
+  getSelectionRoots,
+  getGroupingIssue,
+  groupStates,
+  removeHierarchyStates,
+  reparentState,
+  findContainingParent,
 } from '@/lib/machine-hierarchy';
 import { useUndoableState } from '@/lib/undo-history';
 import { createTransitionRoutes } from '@/lib/transition-routes';
@@ -284,6 +292,7 @@ function StateNode({ data, selected }: NodeProps<StateFlowNode>) {
   const isParent = data.isParent;
   return (
     <div
+      data-state-frame={isParent ? data.label : undefined}
       data-analysis-highlighted={data.analysisHighlighted || undefined}
       data-analysis-context-highlighted={
         data.analysisContextHighlighted || undefined
@@ -293,17 +302,17 @@ function StateNode({ data, selected }: NodeProps<StateFlowNode>) {
           ? 'border-amber-400 ring-4 ring-amber-300/30 shadow-[0_10px_36px_rgb(245_158_11/18%)] dark:ring-amber-400/20'
           : data.dropTarget
             ? 'border-violet-500 ring-4 ring-violet-400/35 shadow-[0_10px_36px_rgb(124_58_237/22%)] dark:border-violet-300 dark:ring-violet-300/30'
-          : data.analysisHighlighted
-            ? 'border-[var(--editor-analysis)] ring-4 ring-rose-500/15 shadow-[0_10px_32px_rgb(225_29_72/16%)] dark:ring-rose-400/20'
-            : data.analysisContextHighlighted
-              ? 'border-[var(--editor-analysis-context)] ring-2 ring-amber-400/10 dark:ring-amber-300/15'
+            : data.analysisHighlighted
+              ? 'border-[var(--editor-analysis)] ring-4 ring-rose-500/15 shadow-[0_10px_32px_rgb(225_29_72/16%)] dark:ring-rose-400/20'
+              : data.analysisContextHighlighted
+                ? 'border-[var(--editor-analysis-context)] ring-2 ring-amber-400/10 dark:ring-amber-300/15'
                 : selected
-                ? 'border-violet-500 ring-4 ring-violet-500/10 dark:border-violet-400 dark:ring-violet-400/20'
-                : data.unreachable
-                  ? 'border-orange-300 dark:border-orange-500'
-                  : data.final
-                    ? 'border-emerald-300 dark:border-emerald-500'
-                    : 'border-[var(--editor-border)]'
+                  ? 'border-violet-500 ring-4 ring-violet-500/10 dark:border-violet-400 dark:ring-violet-400/20'
+                  : data.unreachable
+                    ? 'border-orange-300 dark:border-orange-500'
+                    : data.final
+                      ? 'border-emerald-300 dark:border-emerald-500'
+                      : 'border-[var(--editor-border)]'
       }`}
     >
       {!data.simulating && (
@@ -324,7 +333,11 @@ function StateNode({ data, selected }: NodeProps<StateFlowNode>) {
         {(data.initial || data.initialWithinParent) && (
           <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-violet-100 dark:bg-violet-500/15">
             <InitialStateMark
-              label={data.initialWithinParent ? 'Initial child state' : 'Initial state'}
+              label={
+                data.initialWithinParent
+                  ? 'Initial child state'
+                  : 'Initial state'
+              }
             />
           </span>
         )}
@@ -735,7 +748,9 @@ function EditorSurface() {
   const [groupName, setGroupName] = useState('');
   const [groupInitialChild, setGroupInitialChild] = useState('');
   const [groupDialogError, setGroupDialogError] = useState<string | null>(null);
-  const [dropTargetParentKey, setDropTargetParentKey] = useState<string | null>(null);
+  const [dropTargetParentKey, setDropTargetParentKey] = useState<string | null>(
+    null,
+  );
   const simulating = simulationState !== null;
   const machineCreated = graph.id.trim().length > 0;
   const machineReady = machineCreated && graph.states.length > 0;
@@ -974,8 +989,10 @@ function EditorSurface() {
             ? { ...state, key: nextKey }
             : {
                 ...state,
-                parentKey: state.parentKey === oldKey ? nextKey : state.parentKey,
-                initialChild: state.initialChild === oldKey ? nextKey : state.initialChild,
+                parentKey:
+                  state.parentKey === oldKey ? nextKey : state.parentKey,
+                initialChild:
+                  state.initialChild === oldKey ? nextKey : state.initialChild,
               },
         ),
         transitions: current.transitions.map((transition) => ({
@@ -1008,18 +1025,36 @@ function EditorSurface() {
     [analysisHighlight],
   );
 
+  const hierarchyLayout = useMemo(
+    () =>
+      getHierarchyLayout(
+        graph,
+        new Map(
+          [...nodeRuntimeById].map(([key, runtime]) => [
+            key,
+            runtime.measured ?? {},
+          ]),
+        ),
+      ),
+    [graph, nodeRuntimeById],
+  );
+  const frameDepth = Math.max(
+    0,
+    ...graph.states
+      .filter((state) => getStateChildren(graph, state.key).length > 0)
+      .map((state) => hierarchyLayout.get(state.key)?.depth ?? 0),
+  );
+
   const nodes = useMemo<StateFlowNode[]>(
     () =>
-      graph.states.map((state) => {
+      [...hierarchyLayout.keys()].map((key) => {
+        const state = getState(graph, key)!;
+        const geometry = hierarchyLayout.get(key)!;
         const runtime = nodeRuntimeById.get(state.key);
         const children = getStateChildren(graph, state.key);
         const isParent = children.length > 0;
-        const frameWidth = isParent
-          ? Math.max(560, ...children.map((child) => child.position.x + 240))
-          : undefined;
-        const frameHeight = isParent
-          ? Math.max(340, ...children.map((child) => child.position.y + 140))
-          : undefined;
+        const frameWidth = isParent ? geometry.width : undefined;
+        const frameHeight = isParent ? geometry.height : undefined;
         return {
           ...runtime,
           id: state.key,
@@ -1028,8 +1063,10 @@ function EditorSurface() {
           ...(state.parentKey
             ? { parentId: state.parentKey, extent: 'parent' as const }
             : {}),
-          ...(isParent ? { style: { width: frameWidth, height: frameHeight } } : {}),
-          zIndex: isParent ? 0 : 10,
+          ...(isParent
+            ? { style: { width: frameWidth, height: frameHeight } }
+            : {}),
+          zIndex: isParent ? geometry.depth : frameDepth + 10,
           selected: selectedStateKeys.has(state.key),
           draggable: !simulating,
           deletable: !simulating,
@@ -1038,8 +1075,9 @@ function EditorSurface() {
             initial: graph.initial === state.key,
             initialWithinParent: Boolean(
               state.parentKey &&
-                graph.states.find((candidate) => candidate.key === state.parentKey)?.initialChild ===
-                  state.key,
+              graph.states.find(
+                (candidate) => candidate.key === state.parentKey,
+              )?.initialChild === state.key,
             ),
             final: state.final,
             unreachable: !reachableStateKeys.has(state.key),
@@ -1062,6 +1100,8 @@ function EditorSurface() {
       analysisHighlightedStateKeys,
       analysisContextStateKeys,
       nodeRuntimeById,
+      hierarchyLayout,
+      frameDepth,
       renameState,
       renamingState,
       reachableStateKeys,
@@ -1106,13 +1146,15 @@ function EditorSurface() {
         animated: false,
         deletable: true,
         selectable: true,
-        zIndex: analysisHighlighted
-          ? 7
-          : analysisContextHighlighted
-            ? 6
-            : selected
-              ? 5
-              : 4,
+        zIndex:
+          frameDepth +
+          (analysisHighlighted
+            ? 7
+            : analysisContextHighlighted
+              ? 6
+              : selected
+                ? 5
+                : 4),
         data: {
           sourceLabel: route.source,
           targetLabel: route.target,
@@ -1163,47 +1205,24 @@ function EditorSurface() {
     simulating,
     transitionRoutes,
     graph,
+    frameDepth,
   ]);
 
   const removeStates = useCallback(
     (keys: string[]) => {
       if (simulating || keys.length === 0) return;
-      const keySet = new Set(
-        keys.filter((key) => {
-          let parentKey = graph.states.find((state) => state.key === key)?.parentKey;
-          while (parentKey) {
-            if (keys.includes(parentKey)) return false;
-            parentKey = graph.states.find((state) => state.key === parentKey)?.parentKey;
-          }
-          return true;
-        }),
+      const includesParent = getSelectionRoots(graph, keys).some(
+        (key) => getStateChildren(graph, key).length > 0,
       );
-      const parentStates = graph.states.filter((state) => keySet.has(state.key) && getStateChildren(graph, state.key).length > 0);
-      const ungroupedChildren = graph.states
-        .filter((state) => state.parentKey && keySet.has(state.parentKey))
-        .map((state) => {
-          const parent = graph.states.find((candidate) => candidate.key === state.parentKey);
-          return parent
-            ? { ...state, parentKey: undefined, position: { x: state.position.x + parent.position.x, y: state.position.y + parent.position.y } }
-            : { ...state, parentKey: undefined };
-        });
-      const remaining = graph.states
-        .filter((state) => !keySet.has(state.key) && !(state.parentKey && keySet.has(state.parentKey)))
-        .map((state) => state);
-      const nextStates = [...remaining, ...ungroupedChildren];
-      setGraph((current) => ({
-        ...current,
-        initial: keySet.has(current.initial)
-          ? (ungroupedChildren[0]?.key ?? remaining.find((state) => state.parentKey === undefined)?.key ?? '')
-          : current.initial,
-        states: nextStates,
-        transitions: current.transitions.filter(
-          (transition) =>
-            !keySet.has(transition.source) && !keySet.has(transition.target),
-        ),
-      }));
+      setGraph((current) => removeHierarchyStates(current, keys));
       selectEditorItem({ kind: 'machine', id: 'machine' });
-      clearFeedback(parentStates.length ? 'Parent state removed; children kept' : keys.length === 1 ? 'State deleted' : 'States deleted');
+      clearFeedback(
+        includesParent
+          ? 'Parent state removed; children kept'
+          : keys.length === 1
+            ? 'State deleted'
+            : 'States deleted',
+      );
     },
     [clearFeedback, graph, selectEditorItem, setGraph, simulating],
   );
@@ -1239,18 +1258,25 @@ function EditorSurface() {
       );
       if (selectionChanged) {
         const nextSelectedStateKeys = new Set(
-          nextNodes.filter((node) => node.selected).map((node) => node.id),
+          // A selected frame represents its subtree, not a mixed-scope selection.
+          getSelectionRoots(
+            graph,
+            nextNodes.filter((node) => node.selected).map((node) => node.id),
+          ),
         );
         const mostRecentlySelected = changes.findLast(
           (change) => change.type === 'select' && change.selected,
         );
         setSelectedStateKeys(nextSelectedStateKeys);
         setSelection((current) => {
-          if (mostRecentlySelected?.type === 'select') {
+          if (
+            mostRecentlySelected?.type === 'select' &&
+            nextSelectedStateKeys.has(mostRecentlySelected.id)
+          ) {
             return { kind: 'state', id: mostRecentlySelected.id };
           }
           if (
-            current?.kind === 'state' &&
+            current?.kind !== 'state' ||
             !nextSelectedStateKeys.has(current.id)
           ) {
             const fallback = [...nextSelectedStateKeys].at(-1);
@@ -1273,7 +1299,7 @@ function EditorSurface() {
         }));
       }
     },
-    [nodes, removeStates, setGraphTransient, simulating],
+    [graph, nodes, removeStates, setGraphTransient, simulating],
   );
 
   const removeTransitions = useCallback(
@@ -1324,7 +1350,7 @@ function EditorSurface() {
   );
 
   const addStateAt = useCallback(
-    (position: { x: number; y: number }) => {
+    (position: { x: number; y: number }, parentKey?: string) => {
       if (simulating) return;
       let index = graph.states.length + 1;
       let key = `state${index}`;
@@ -1341,11 +1367,14 @@ function EditorSurface() {
         entryActions: [],
         exitActions: [],
       };
-      setGraph((current) => ({
-        ...current,
-        initial: current.states.length === 0 ? key : current.initial,
-        states: [...current.states, state],
-      }));
+      setGraph((current) => {
+        const next = {
+          ...current,
+          initial: current.states.length === 0 ? key : current.initial,
+          states: [...current.states, state],
+        };
+        return parentKey ? reparentState(next, key, parentKey) : next;
+      });
       selectEditorItem({ kind: 'state', id: key });
       setRenamingState(key);
       clearFeedback('State created');
@@ -1399,15 +1428,43 @@ function EditorSurface() {
   };
 
   const setInitial = (key: string) => {
-    setGraph((current) => ({ ...current, initial: key }));
-    clearFeedback('Initial state updated');
+    const state = graph.states.find((candidate) => candidate.key === key);
+    if (!state) return;
+    setGraph((current) => {
+      const selected = current.states.find(
+        (candidate) => candidate.key === key,
+      );
+      if (!selected) return current;
+      if (selected.parentKey === undefined) {
+        return current.initial === key ? current : { ...current, initial: key };
+      }
+      const parent = current.states.find(
+        (candidate) => candidate.key === selected.parentKey,
+      );
+      if (!parent || parent.initialChild === key) return current;
+      return {
+        ...current,
+        states: current.states.map((candidate) =>
+          candidate.key === parent.key
+            ? { ...candidate, initialChild: key }
+            : candidate,
+        ),
+      };
+    });
+    clearFeedback(
+      state.parentKey === undefined
+        ? `${key} is now the machine's initial state`
+        : `${key} is now the initial child of ${state.parentKey}`,
+    );
   };
 
   const toggleFinal = (key: string) => {
     const state = graph.states.find((candidate) => candidate.key === key);
     if (!state) return;
     if (!state.final && getStateChildren(graph, key).length > 0) {
-      showIssues(['Parent states cannot be final. Mark a child state final instead.']);
+      showIssues([
+        'Parent states cannot be final. Mark a child state final instead.',
+      ]);
       return;
     }
     if (
@@ -1445,35 +1502,23 @@ function EditorSurface() {
 
   const removeFromParent = useCallback(
     (key: string) => {
-      const child = graph.states.find((state) => state.key === key);
+      const child = getState(graph, key);
       if (!child?.parentKey || simulating) return;
-      const parent = graph.states.find((state) => state.key === child.parentKey);
+      const parent = getState(graph, child.parentKey);
       if (!parent) return;
-      setGraph((current) => ({
-        ...current,
-        states: current.states.map((state) =>
-          state.key === key
-            ? {
-                ...state,
-                parentKey: undefined,
-                position: {
-                  x: state.position.x + parent.position.x,
-                  y: state.position.y + parent.position.y,
-                },
-              }
-            : state,
-        ),
-      }));
+      setGraph((current) => reparentState(current, key, parent.parentKey));
       clearFeedback(`${key} removed from ${parent.key}`);
     },
-    [clearFeedback, graph.states, setGraph, simulating],
+    [clearFeedback, graph, setGraph, simulating],
   );
 
   const duplicateState = (key: string) => {
     const source = graph.states.find((state) => state.key === key);
     if (!source || simulating) return;
     if (getStateChildren(graph, key).length > 0) {
-      showIssues(['Duplicate the child states individually before creating another parent.']);
+      showIssues([
+        'Duplicate the child states individually before creating another parent.',
+      ]);
       return;
     }
 
@@ -1580,75 +1625,45 @@ function EditorSurface() {
   }, []);
 
   const openGroupDialog = useCallback(() => {
-    const candidates = [...selectedStateKeys]
-      .map((key) => graph.states.find((state) => state.key === key))
-      .filter((state): state is GraphState => Boolean(state));
+    const candidates = graph.states.filter((state) =>
+      selectedStateKeys.has(state.key),
+    );
+    const parentKey = candidates[0]?.parentKey;
+    const initial =
+      parentKey === undefined
+        ? graph.initial
+        : getState(graph, parentKey)?.initialChild;
     setGroupName('');
-    setGroupInitialChild(candidates[0]?.key ?? '');
+    setGroupInitialChild(
+      candidates.find((state) => state.key === initial)?.key ??
+        candidates[0]?.key ??
+        '',
+    );
     setGroupDialogError(null);
     setGroupDialogOpen(true);
-  }, [graph.states, selectedStateKeys]);
+  }, [graph, selectedStateKeys]);
 
-  const groupSelectedStates = (event: React.SyntheticEvent<HTMLFormElement>) => {
+  const groupSelectedStates = (
+    event: React.SyntheticEvent<HTMLFormElement>,
+  ) => {
     event.preventDefault();
     const name = groupName.trim();
-    const selected = graph.states.filter((state) => selectedStateKeys.has(state.key));
-    if (!name) {
-      setGroupDialogError('Give the parent state a name.');
-      return;
+    try {
+      const next = groupStates(
+        graph,
+        [...selectedStateKeys],
+        name,
+        groupInitialChild,
+      );
+      setGraph(next);
+      setGroupDialogOpen(false);
+      selectEditorItem({ kind: 'state', id: name });
+      clearFeedback(`Grouped ${selectedStateKeys.size} states under ${name}`);
+    } catch (error) {
+      setGroupDialogError(
+        error instanceof Error ? error.message : 'Could not create the parent.',
+      );
     }
-    if (graph.states.some((state) => state.key === name)) {
-      setGroupDialogError(`A state named ${name} already exists.`);
-      return;
-    }
-    if (selected.length < 2) {
-      setGroupDialogError('Select at least two top-level states to group.');
-      return;
-    }
-    if (selected.some((state) => state.parentKey !== undefined || getStateChildren(graph, state.key).length > 0)) {
-      setGroupDialogError('Only top-level leaf states can be grouped right now.');
-      return;
-    }
-    if (!selected.some((state) => state.key === groupInitialChild)) {
-      setGroupDialogError('Choose one of the selected states as the initial child.');
-      return;
-    }
-    const minX = Math.min(...selected.map((state) => state.position.x));
-    const minY = Math.min(...selected.map((state) => state.position.y));
-    const parentPosition = { x: minX - 32, y: minY - 64 };
-    const childKeys = new Set(selected.map((state) => state.key));
-    const nextStates = graph.states.map((state) =>
-      childKeys.has(state.key)
-        ? {
-            ...state,
-            parentKey: name,
-            position: {
-              x: state.position.x - parentPosition.x,
-              y: state.position.y - parentPosition.y,
-            },
-          }
-        : state,
-    );
-    const parent: GraphState = {
-      key: name,
-      initialChild: groupInitialChild,
-      position: parentPosition,
-      final: false,
-      description: '',
-      tags: [],
-      entryActions: [],
-      exitActions: [],
-    };
-    const firstIndex = Math.min(...graph.states.map((state, index) => (childKeys.has(state.key) ? index : Number.POSITIVE_INFINITY)));
-    nextStates.splice(firstIndex, 0, parent);
-    setGraph((current) => ({
-      ...current,
-      initial: childKeys.has(current.initial) ? name : current.initial,
-      states: nextStates,
-    }));
-    setGroupDialogOpen(false);
-    selectEditorItem({ kind: 'state', id: name });
-    clearFeedback(`Grouped ${selected.length} states under ${name}`);
   };
 
   const requestNewMachine = () => {
@@ -1909,6 +1924,32 @@ function EditorSurface() {
     });
   };
 
+  const groupingUnavailableReason = getGroupingIssue(graph, [
+    ...selectedStateKeys,
+  ]);
+  const groupScopeKey = graph.states.find((state) =>
+    selectedStateKeys.has(state.key),
+  )?.parentKey;
+  const groupScopeInitial =
+    groupScopeKey === undefined
+      ? graph.initial
+      : getState(graph, groupScopeKey)?.initialChild;
+
+  const dropParentFor = (node: StateFlowNode) => {
+    if (simulating || selectedStateKeys.size > 1) return undefined;
+    const origin = node.parentId
+      ? hierarchyLayout.get(node.parentId)
+      : undefined;
+    const bounds = {
+      x: node.position.x + (origin?.x ?? 0),
+      y: node.position.y + (origin?.y ?? 0),
+      width: node.measured?.width ?? hierarchyLayout.get(node.id)?.width ?? 208,
+      height:
+        node.measured?.height ?? hierarchyLayout.get(node.id)?.height ?? 108,
+    };
+    return findContainingParent(graph, hierarchyLayout, bounds, node.id);
+  };
+
   const selectedState =
     selection?.kind === 'state'
       ? graph.states.find((state) => state.key === selection.id)
@@ -1926,10 +1967,12 @@ function EditorSurface() {
   const routeKeyFor = useCallback(
     (source: string, target: string) => {
       const direct = graph.transitions.find(
-        (transition) => transition.source === source && transition.target === target,
+        (transition) =>
+          transition.source === source && transition.target === target,
       );
       const inherited = getEffectiveTransitions(graph, source).find(
-        (transition) => getInitialLeafState(graph, transition.target) === target,
+        (transition) =>
+          getInitialLeafState(graph, transition.target) === target,
       );
       const transition = direct ?? inherited;
       return transition
@@ -2007,17 +2050,7 @@ function EditorSurface() {
                   {machineCreated ? 'New' : 'Create'}
                 </span>
               </Button>
-              {selectedStateKeys.size >= 2 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={openGroupDialog}
-                  title="Group selected states into a compound parent"
-                >
-                  <CopyPlus />
-                  <span className="hidden xl:inline">Group</span>
-                </Button>
-              )}
+
               <div className="flex items-center rounded-lg border border-[var(--editor-border)] bg-[var(--editor-panel-subtle)] p-0.5">
                 <Button
                   variant="ghost"
@@ -2101,7 +2134,9 @@ function EditorSurface() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setSimulationState(getInitialLeafState(graph, graph.initial))}
+                onClick={() =>
+                  setSimulationState(getInitialLeafState(graph, graph.initial))
+                }
               >
                 <RotateCcw />
                 Reset
@@ -2193,13 +2228,24 @@ function EditorSurface() {
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
             onNodesChange={onNodesChange}
-            onBeforeDelete={async ({ nodes: nodesToDelete, edges: edgesToDelete }) => {
+            onBeforeDelete={async ({
+              nodes: nodesToDelete,
+              edges: edgesToDelete,
+            }) => {
               if (nodesToDelete.length > 0) {
                 pendingNodeDeletionEdgeIds.current = new Set(
                   edgesToDelete.map((edge) => edge.id),
                 );
               }
-              const rootNodes = nodesToDelete.filter((node) => !node.parentId);
+              const rootKeys = new Set(
+                getSelectionRoots(
+                  graph,
+                  nodesToDelete.map((node) => node.id),
+                ),
+              );
+              const rootNodes = nodesToDelete.filter((node) =>
+                rootKeys.has(node.id),
+              );
               const rootIds = new Set(rootNodes.map((node) => node.id));
               const includesParent = rootNodes.some(
                 (node) => getStateChildren(graph, node.id).length > 0,
@@ -2210,50 +2256,41 @@ function EditorSurface() {
               return {
                 nodes: rootNodes,
                 edges: edgesToDelete.filter(
-                  (edge) => rootIds.has(edge.source) || rootIds.has(edge.target),
+                  (edge) =>
+                    rootIds.has(edge.source) || rootIds.has(edge.target),
                 ),
               };
             }}
             onNodeDragStart={beginGraphTransaction}
             onNodeDrag={(_, node) => {
-              if (simulating || node.parentId) {
-                setDropTargetParentKey(null);
-                return;
-              }
-              const parent = flow
-                .getIntersectingNodes(node, true)
-                .find((candidate) => getStateChildren(graph, candidate.id).length > 0);
-              setDropTargetParentKey(parent?.id ?? null);
+              const parentKey = dropParentFor(node);
+              setDropTargetParentKey(
+                parentKey !== node.parentId ? (parentKey ?? null) : null,
+              );
             }}
             onNodeDragStop={(_, node) => {
               setDropTargetParentKey(null);
-              if (simulating || node.parentId) {
-                commitGraphTransaction();
-                return;
-              }
-              const parent = flow
-                .getIntersectingNodes(node, true)
-                .find((candidate) => getStateChildren(graph, candidate.id).length > 0);
-              if (parent && parent.id !== node.id) {
-                setGraph((current) => ({
-                  ...current,
-                  states: current.states.map((state) =>
-                    state.key === node.id
-                      ? {
-                          ...state,
-                          parentKey: parent.id,
-                          position: {
-                            x: node.position.x - parent.position.x,
-                            y: node.position.y - parent.position.y,
-                          },
-                        }
-                      : state,
+              const parentKey = dropParentFor(node);
+              if (parentKey && parentKey !== node.parentId) {
+                setGraph((current) =>
+                  reparentState(
+                    {
+                      ...current,
+                      states: current.states.map((state) =>
+                        state.key === node.id
+                          ? { ...state, position: node.position }
+                          : state,
+                      ),
+                    },
+                    node.id,
+                    parentKey,
                   ),
-                }));
-                clearFeedback(`Added ${node.id} to ${parent.id}`);
+                );
+                clearFeedback(`Added ${node.id} to ${parentKey}`);
               }
               commitGraphTransaction();
             }}
+
             onEdgesChange={onEdgesChange}
             onEdgeClick={(_, edge) => {
               const transitionIds =
@@ -2288,7 +2325,10 @@ function EditorSurface() {
                 simulating ||
                 !recoveryComplete ||
                 !(event.target instanceof Element) ||
-                !event.target.classList.contains('react-flow__pane')
+                !(
+                  event.target.classList.contains('react-flow__pane') ||
+                  event.target.hasAttribute('data-state-frame')
+                )
               ) {
                 return;
               }
@@ -2303,6 +2343,7 @@ function EditorSurface() {
                   x: event.clientX,
                   y: event.clientY,
                 }),
+                event.target.getAttribute('data-state-frame') ?? undefined,
               );
             }}
             onMoveEnd={(_, nextViewport: Viewport) =>
@@ -2315,7 +2356,7 @@ function EditorSurface() {
             zIndexMode="manual"
             elevateEdgesOnSelect={false}
             selectionOnDrag
-            selectionMode={SelectionMode.Partial}
+            selectionMode={SelectionMode.Full}
             panOnDrag={[1]}
             panActivationKeyCode="Space"
             zoomOnDoubleClick={false}
@@ -2478,11 +2519,16 @@ function EditorSurface() {
               currentState={currentState}
               transitions={availableTransitions}
               onTransition={(transition) => {
-                const targetLeaf = getInitialLeafState(graph, transition.target);
+                const targetLeaf = getInitialLeafState(
+                  graph,
+                  transition.target,
+                );
                 setSimulationState(targetLeaf);
                 selectEditorItem({ kind: 'state', id: targetLeaf });
               }}
-              onReset={() => setSimulationState(getInitialLeafState(graph, graph.initial))}
+              onReset={() =>
+                setSimulationState(getInitialLeafState(graph, graph.initial))
+              }
             />
           ) : !machineCreated ? (
             <div className="flex flex-1 items-center justify-center px-8 text-center text-sm leading-6 text-slate-400 dark:text-slate-500">
@@ -2556,9 +2602,11 @@ function EditorSurface() {
                       kind: 'path',
                       key,
                       states: path.states,
-                      routes: path.states.slice(1).map((target, index) =>
-                        routeKeyFor(path.states[index], target),
-                      ),
+                      routes: path.states
+                        .slice(1)
+                        .map((target, index) =>
+                          routeKeyFor(path.states[index], target),
+                        ),
                     });
                     const pathStates = new Set(path.states);
                     const pathNodes = nodes.filter(({ id }) =>
@@ -2586,7 +2634,9 @@ function EditorSurface() {
                     selectEditorItem({ kind: 'machine', id: 'machine' });
                     const relatedTransitions =
                       stateDirection === 'incoming'
-                        ? graph.transitions.filter((transition) => transition.target === state)
+                        ? graph.transitions.filter(
+                            (transition) => transition.target === state,
+                          )
                         : getEffectiveTransitions(graph, state);
                     setAnalysisHighlight({
                       kind: 'node',
@@ -2598,11 +2648,11 @@ function EditorSurface() {
                     });
                     const framedStates = new Set([
                       state,
-                        ...relatedTransitions.flatMap((transition) => [
-                          transition.source,
-                          transition.target,
-                          getInitialLeafState(graph, transition.target),
-                        ]),
+                      ...relatedTransitions.flatMap((transition) => [
+                        transition.source,
+                        transition.target,
+                        getInitialLeafState(graph, transition.target),
+                      ]),
                     ]);
                     const framedNodes = nodes.filter(({ id }) =>
                       framedStates.has(id),
@@ -2629,14 +2679,17 @@ function EditorSurface() {
                     selectEditorItem({ kind: 'machine', id: 'machine' });
                     const cycleStates = new Set(cycle.states);
                     const cycleRoutes = cycle.states.map((source, index) =>
-                      routeKeyFor(source, cycle.states[(index + 1) % cycle.states.length]),
+                      routeKeyFor(
+                        source,
+                        cycle.states[(index + 1) % cycle.states.length],
+                      ),
                     );
                     const routesForPath = (path: string[] | null) => {
                       if (!path) return [];
                       return path
                         .slice(1)
-                        .map(
-                          (target, index) => routeKeyFor(path[index], target),
+                        .map((target, index) =>
+                          routeKeyFor(path[index], target),
                         );
                     };
                     const contextStates = [
@@ -2673,10 +2726,54 @@ function EditorSurface() {
                     }
                   }}
                 />
+              ) : selectedStateKeys.size > 1 ? (
+                <>
+                  <InspectorHeader
+                    eyebrow="Selection"
+                    title={`${selectedStateKeys.size} states selected`}
+                  />
+                  <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-5 [scrollbar-gutter:stable]">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      onClick={openGroupDialog}
+                      disabled={Boolean(groupingUnavailableReason)}
+                      aria-describedby="selection-parent-help"
+                    >
+                      <CopyPlus />
+                      Create parent
+                    </Button>
+                    <p
+                      id="selection-parent-help"
+                      className="text-xs leading-5 text-slate-500 dark:text-slate-400"
+                    >
+                      {groupingUnavailableReason ??
+                        'Create a parent containing the selected states. Choose its name and initial child in the next step.'}
+                    </p>
+                  </div>
+                </>
               ) : selectedState ? (
                 <StateInspector
                   state={selectedState}
-                  initial={graph.initial === selectedState.key}
+                  initial={
+                    selectedState.parentKey === undefined
+                      ? graph.initial === selectedState.key
+                      : graph.states.find(
+                          (candidate) =>
+                            candidate.key === selectedState.parentKey,
+                        )?.initialChild === selectedState.key
+                  }
+                  childStates={getStateChildren(graph, selectedState.key)}
+                  onSetInitialChild={(key) => {
+                    if (
+                      getStateChildren(graph, selectedState.key).some(
+                        (child) => child.key === key,
+                      )
+                    ) {
+                      setInitial(key);
+                    }
+                  }}
                   unreachable={!reachableStateKeys.has(selectedState.key)}
                   outgoingCount={
                     graph.transitions.filter(
@@ -2826,12 +2923,18 @@ function EditorSurface() {
           <DialogContent className="sm:max-w-md">
             <form onSubmit={groupSelectedStates} className="grid gap-5">
               <DialogHeader>
-                <DialogTitle>Group states</DialogTitle>
+                <DialogTitle>Create parent state</DialogTitle>
                 <DialogDescription>
-                  Create a compound parent state. The selected states stay as editable children inside it.
+                  The {selectedStateKeys.size} selected states become children
+                  of a new parent
+                  {groupScopeKey ? ` inside ${groupScopeKey}` : ''}. Transitions
+                  on the parent can apply to all its children.
                 </DialogDescription>
               </DialogHeader>
-              <label htmlFor="group-state-name" className="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
+              <label
+                htmlFor="group-state-name"
+                className="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-200"
+              >
                 Parent state name
                 <Input
                   id="group-state-name"
@@ -2844,7 +2947,10 @@ function EditorSurface() {
                   aria-invalid={groupDialogError ? true : undefined}
                 />
               </label>
-              <label htmlFor="group-initial-child" className="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
+              <label
+                htmlFor="group-initial-child"
+                className="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-200"
+              >
                 Initial child
                 <select
                   id="group-initial-child"
@@ -2852,15 +2958,49 @@ function EditorSurface() {
                   onChange={(event) => setGroupInitialChild(event.target.value)}
                   className="h-10 rounded-md border border-[var(--editor-border)] bg-[var(--editor-panel)] px-3 text-sm text-slate-800 dark:text-slate-100"
                 >
-                  {graph.states.filter((state) => selectedStateKeys.has(state.key)).map((state) => (
-                    <option key={state.key} value={state.key}>{state.key}</option>
-                  ))}
+                  {graph.states
+                    .filter((state) => selectedStateKeys.has(state.key))
+                    .map((state) => (
+                      <option key={state.key} value={state.key}>
+                        {state.key}
+                      </option>
+                    ))}
                 </select>
               </label>
-              {groupDialogError && <p className="text-sm text-rose-700 dark:text-rose-300" role="alert">{groupDialogError}</p>}
+              <p className="text-xs leading-5 text-slate-500 dark:text-slate-400">
+                The initial child is entered by default when the parent is
+                entered. You can change it later in Properties.
+                {groupScopeInitial &&
+                  selectedStateKeys.has(groupScopeInitial) && (
+                    <>
+                      {' '}
+                      This parent will become the initial state of{' '}
+                      {groupScopeKey ?? 'the machine'}.
+                    </>
+                  )}
+              </p>
+              {groupDialogError && (
+                <p
+                  className="text-sm text-rose-700 dark:text-rose-300"
+                  role="alert"
+                >
+                  {groupDialogError}
+                </p>
+              )}
               <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => setGroupDialogOpen(false)}>Cancel</Button>
-                <Button type="submit" className="bg-violet-600 hover:bg-violet-700"><CopyPlus /> Group states</Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setGroupDialogOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  className="bg-violet-600 hover:bg-violet-700"
+                >
+                  <CopyPlus /> Create parent
+                </Button>
               </DialogFooter>
             </form>
           </DialogContent>
@@ -2951,6 +3091,8 @@ function MachineInspector({
 function StateInspector({
   state,
   initial,
+  childStates,
+  onSetInitialChild,
   unreachable,
   outgoingCount,
   onRename,
@@ -2968,6 +3110,8 @@ function StateInspector({
 }: {
   state: GraphState;
   initial: boolean;
+  childStates: GraphState[];
+  onSetInitialChild: (key: string) => void;
   unreachable: boolean;
   outgoingCount: number;
   onRename: (value: string) => void;
@@ -2997,25 +3141,76 @@ function StateInspector({
             ariaLabel="State key"
           />
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          <Button
-            variant={initial ? 'secondary' : 'outline'}
-            size="sm"
-            onClick={onSetInitial}
-            disabled={initial}
-          >
-            <InitialStateMark />
-            {initial ? 'Initial' : 'Set initial'}
-          </Button>
-          <Button
-            variant={state.final ? 'secondary' : 'outline'}
-            size="sm"
-            onClick={onToggleFinal}
-          >
-            <FinalStateMark />
-            {state.final ? 'Final' : 'Set final'}
-          </Button>
+        <div className="space-y-2">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            State role in{' '}
+            <span className="font-medium text-slate-700 dark:text-slate-200">
+              {state.parentKey ?? 'machine'}
+            </span>
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              variant={initial ? 'secondary' : 'outline'}
+              size="sm"
+              onClick={onSetInitial}
+              disabled={initial}
+              aria-label={
+                state.parentKey !== undefined
+                  ? `${initial ? 'Initial child' : 'Set initial child'} of ${state.parentKey}`
+                  : initial
+                    ? 'Machine initial state'
+                    : 'Set initial state of machine'
+              }
+            >
+              <InitialStateMark
+                label={
+                  state.parentKey !== undefined
+                    ? 'Initial child state'
+                    : 'Initial state'
+                }
+              />
+              {initial ? 'Initial' : 'Set initial'}
+            </Button>
+            <Button
+              variant={state.final ? 'secondary' : 'outline'}
+              size="sm"
+              onClick={onToggleFinal}
+            >
+              <FinalStateMark />
+              {state.final ? 'Final' : 'Set final'}
+            </Button>
+          </div>
+          <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+            {state.parentKey !== undefined
+              ? 'Initial: the default entry into this parent. Final: completes this parent.'
+              : 'Initial: where the machine starts. Final: completes the machine.'}
+          </p>
         </div>
+        {childStates.length > 0 && (
+          <div className="space-y-1.5">
+            <label
+              htmlFor="state-initial-child"
+              className="text-xs font-medium text-slate-700 dark:text-slate-200"
+            >
+              Initial child
+            </label>
+            <select
+              id="state-initial-child"
+              value={state.initialChild ?? ''}
+              onChange={(event) => onSetInitialChild(event.target.value)}
+              className="h-9 w-full rounded-md border border-[var(--editor-border)] bg-[var(--editor-panel)] px-3 text-sm text-slate-800 dark:text-slate-100"
+            >
+              {childStates.map((child) => (
+                <option key={child.key} value={child.key}>
+                  {child.key}
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+              Entered by default when this parent is entered.
+            </p>
+          </div>
+        )}
         {unreachable && (
           <div className="flex gap-2 rounded-xl border border-orange-200 bg-orange-50 p-3 text-xs leading-5 text-orange-800 dark:border-orange-500/35 dark:bg-orange-500/10 dark:text-orange-200">
             <TriangleAlert className="mt-0.5 size-4 shrink-0" />

@@ -9,7 +9,7 @@ A state with no child states.
 _Avoid_: Leaf node, regular state
 
 **Compound parent state**:
-A state that contains mutually exclusive child states and names one initial child state.
+A state that contains mutually exclusive child states and names one initial child state. A child may itself be a compound parent state; the same rules apply at every depth.
 Its rendered boundary on the canvas may be called a frame.
 _Avoid_: Visual group, container
 
